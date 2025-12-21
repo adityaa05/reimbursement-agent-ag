@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+.venv/
+venv/
+
+# uv / build artifacts
+.uv/
+uv.lock
+
+# Environment variables
+.env
+
+# OS
+.DS_Store
+
+# Logs
+*.log
