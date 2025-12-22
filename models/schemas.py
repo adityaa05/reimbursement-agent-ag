@@ -162,3 +162,41 @@ class OdooExpenseFetchRequest(BaseModel):
     odoo_db: str
     odoo_username: str
     odoo_password: str
+
+#---
+
+class EnrichmentRules(BaseModel):
+    """Rules for automatic category enrichment"""
+
+    time_based: Optional[List[Dict[str, Any]]] = None
+    vendor_keywords: Optional[List[str]] = None
+
+
+class ValidationRules(BaseModel):
+    """Rules for policy compliance validation"""
+
+    max_amount: float
+    currency: str = "CHF"
+    requires_receipt: bool = True
+    requires_attendees: Optional[bool] = None
+    max_age_days: Optional[int] = 90
+    approved_vendors: Optional[List[str]] = None
+
+
+class CategoryDefinition(BaseModel):
+    """Complete category definition with enrichment and validation rules"""
+
+    name: str
+    aliases: List[str] = []
+    enrichment_rules: EnrichmentRules
+    validation_rules: ValidationRules
+
+
+class PolicyData(BaseModel):
+    """Complete policy data structure (represents one Confluence page)"""
+
+    company_id: str
+    effective_date: str
+    categories: List[CategoryDefinition]
+    default_category: str = "Other"
+    cache_ttl: int = 86400  # 24 hours in seconds
