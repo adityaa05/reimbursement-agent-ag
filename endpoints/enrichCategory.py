@@ -5,7 +5,7 @@ from utils.policy_helpers import (
     matches_vendor_keywords,
     find_category_by_name,
 )
-from policyStore import get_policy
+from endpoints.policyStore import get_policy
 
 router = APIRouter()
 

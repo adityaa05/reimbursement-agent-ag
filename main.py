@@ -12,6 +12,7 @@ from endpoints.policyStore import router as policy_router
 from endpoints.policyValidator import router as validate_policy_router
 from endpoints.formatReport import router as report_router
 from endpoints.postOdooComment import router as comment_router
+from endpoints.fetchPolicies import router as fetch_policies_router
 
 app = FastAPI(
     title="Expense Reimbursement API - Phase 1",
@@ -39,6 +40,7 @@ app.include_router(policy_router, tags=["Policy"])
 app.include_router(validate_policy_router, tags=["Policy"])
 app.include_router(report_router, tags=["Reporting"])
 app.include_router(comment_router, tags=["Odoo Integration"])
+app.include_router(fetch_policies_router, tags=["Policy"])
 
 
 @app.get("/")
@@ -52,7 +54,7 @@ async def root():
             "fetch": "/fetch-odoo-expense",
             "textract_ocr": "/textract-ocr",
             "zoho_ocr": "/zoho-ocr",
-            "validate_dual_ocr": "/validate-dual-ocr",
+            "validate_dual_ocr": "/validate-ocr",
             "calculate_total": "/calculate-total",
             "enrich_category": "/enrich-category",
             "fetch_policies": "/fetch-policies",
