@@ -80,7 +80,7 @@ class OdooCommentResponse(BaseModel):
 
 
 class OdooOCRRequest(BaseModel):
-    expense_line_id: int  # Odoo expense line ID
+    expense_line_id: int
     odoo_url: str
     odoo_db: str
     odoo_username: str
@@ -95,3 +95,29 @@ class OdooOCRResponse(BaseModel):
     currency: Optional[str] = "CHF"
     source: str = "zoho_ocr"
     line_items: List[Dict[str, Any]] = []
+
+
+class DualOCRValidationRequest(BaseModel):
+    textract_output: OCRResponse
+    odoo_output: OdooOCRResponse
+    employee_claim: float
+    invoice_id: str
+    currency: str = "CHF"
+
+
+class DualOCRValidationResponse(BaseModel):
+    invoice_id: str
+    textract_amount: Optional[float] = None
+    odoo_amount: Optional[float] = None
+    verified_amount: Optional[float] = None
+    employee_reported_amount: float
+
+    ocr_consensus: bool
+    ocr_mismatch_message: Optional[str] = None
+
+    amount_matched: bool
+    discrepancy_message: Optional[str] = None
+    discrepancy_amount: Optional[float] = None
+
+    risk_level: str
+    currency: str

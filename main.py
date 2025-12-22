@@ -6,7 +6,7 @@ import boto3
 import os
 from dotenv import load_dotenv
 import base64
-from endpoints import health, textract, validation
+from endpoints import OCRValidator, health, textractOCR
 
 load_dotenv()
 app = FastAPI()
@@ -20,5 +20,5 @@ app.add_middleware(
 )
 
 app.include_router(health.router)
-app.include_router(textract.router)
-app.include_router(validation)
+app.include_router(textractOCR.router)
+app.include_router(OCRValidator)
