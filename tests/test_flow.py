@@ -1,12 +1,11 @@
 """
-Minimal Output Workflow Test
-Shows only essential validation results for manual verification
+Minimal Output Workflow Test - Focus on Verification Results
+Only shows essential data needed for manual verification against Odoo
 """
 
 import requests
 import json
 import os
-import time
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -22,14 +21,13 @@ ODOO_CONFIG = {
 TEST_EXPENSE_SHEET_ID = 542
 COMPANY_ID = "hashgraph_inc"
 
-# Validate credentials
 if not all(ODOO_CONFIG.values()):
     print("ERROR: Missing Odoo credentials in .env file")
     exit(1)
 
 
 def call_endpoint(endpoint, payload):
-    """Make HTTP POST request - no output"""
+    """Make HTTP POST request - silent operation"""
     try:
         response = requests.post(f"{BASE_URL}{endpoint}", json=payload, timeout=60)
         response.raise_for_status()
@@ -39,11 +37,11 @@ def call_endpoint(endpoint, payload):
 
 
 print("\n" + "=" * 80)
-print("EXPENSE VERIFICATION TEST - MINIMAL OUTPUT")
+print("EXPENSE VERIFICATION TEST")
 print("=" * 80)
 
 # STEP 1: Fetch expense data
-print("\n[1/9] Fetching expense sheet from Odoo...")
+print("\nFetching expense sheet from Odoo...")
 success, expense_data = call_endpoint(
     "/fetch-odoo-expense", {"expense_sheet_id": TEST_EXPENSE_SHEET_ID, **ODOO_CONFIG}
 )
@@ -59,23 +57,22 @@ employee_name = employee_info[1] if isinstance(employee_info, list) else "Unknow
 expense_name = expense_data.get("expense_sheet", {}).get("name", "Unknown")
 expense_lines = expense_data.get("expense_lines", [])
 
-print(f"OK - Found {len(expense_lines)} invoices for {employee_name}")
-print(f"     Expense: {expense_name}")
+print(f"Employee: {employee_name}")
+print(f"Expense Sheet: {expense_name}")
+print(f"Total Invoices: {len(expense_lines)}")
 
-# STEP 2 & 3: Dual OCR Processing
-print("\n[2/9] Running Dual OCR (Textract + Odoo)...")
+# STEP 2 & 3: Dual OCR Processing (Silent)
+print("\nRunning OCR extraction...")
 textract_results = []
 odoo_results = []
 
 for idx, line in enumerate(expense_lines, 1):
     attachments = line.get("attachments", [])
     if not attachments:
-        print(f"     Invoice {idx}: No attachment - SKIPPED")
         textract_results.append(None)
         odoo_results.append(None)
         continue
 
-    # Textract OCR
     attachment = attachments[0]
     success, textract_result = call_endpoint(
         "/textract-ocr",
@@ -87,31 +84,29 @@ for idx, line in enumerate(expense_lines, 1):
     )
     textract_results.append(textract_result if success else None)
 
-    # Odoo OCR
     success, odoo_result = call_endpoint(
         "/odoo-ocr", {"expense_line_id": line.get("id"), **ODOO_CONFIG}
     )
     odoo_results.append(odoo_result if success else None)
 
-print(
-    f"OK - Processed {len([r for r in textract_results if r])} Textract, {len([r for r in odoo_results if r])} Odoo"
-)
-
-# STEP 4: Validate OCR Consensus
-print("\n[3/9] Validating OCR consensus...")
+# STEP 4: Validate OCR
+print("Validating amounts...")
 validation_results = []
 
 print("\n" + "=" * 80)
-print("DUAL OCR VALIDATION RESULTS")
+print("AMOUNT VERIFICATION RESULTS")
 print("=" * 80)
 print(
-    f"{'Invoice':<10} {'Textract':<12} {'Odoo':<12} {'Claimed':<12} {'Consensus':<12} {'Match':<8} {'Risk':<10}"
+    f"{'#':<4} {'Textract':<12} {'Odoo':<12} {'Claimed':<12} {'Currency':<10} {'Status':<15} {'Issue'}"
 )
 print("-" * 80)
 
 for idx in range(len(expense_lines)):
     if not textract_results[idx] or not odoo_results[idx]:
         validation_results.append(None)
+        print(
+            f"{idx+1:<4} {'N/A':<12} {'N/A':<12} {'N/A':<12} {'N/A':<10} {'SKIPPED':<15} No attachment"
+        )
         continue
 
     success, result = call_endpoint(
@@ -127,26 +122,29 @@ for idx in range(len(expense_lines)):
 
     if success:
         v = result
-        textract_amt = (
-            f"{v['textract_amount']:.2f}" if v["textract_amount"] else "FAILED"
-        )
-        odoo_amt = f"{v['odoo_amount']:.2f}" if v["odoo_amount"] else "FAILED"
-        claimed_amt = f"{v['employee_reported_amount']:.2f}"
-        consensus = "YES" if v["ocr_consensus"] else "NO"
-        match = "YES" if v["amount_matched"] else "NO"
-        risk = v["risk_level"]
+        t_amt = f"{v['textract_amount']:.2f}" if v["textract_amount"] else "FAIL"
+        o_amt = f"{v['odoo_amount']:.2f}" if v["odoo_amount"] else "FAIL"
+        c_amt = f"{v['employee_reported_amount']:.2f}"
+        curr = v.get("currency", "CHF")
 
-        print(
-            f"INV-{idx+1:<6} {textract_amt:<12} {odoo_amt:<12} {claimed_amt:<12} {consensus:<12} {match:<8} {risk:<10}"
-        )
+        status = "OK"
+        issue = ""
+
+        if not v["ocr_consensus"]:
+            status = "OCR MISMATCH"
+            issue = f"Textract={t_amt}, Odoo={o_amt}"
 
         if not v["amount_matched"]:
-            print(f"         >>> ALERT: {v['discrepancy_message']}")
+            status = "AMOUNT WRONG"
+            issue = f"Verified={v['verified_amount']:.2f}, Claimed={c_amt}"
 
+        print(
+            f"{idx+1:<4} {t_amt:<12} {o_amt:<12} {c_amt:<12} {curr:<10} {status:<15} {issue}"
+        )
         validation_results.append(result)
 
 # STEP 5: Calculate Total
-print("\n[4/9] Calculating total amount...")
+print("\nCalculating total...")
 employee_total = expense_data.get("expense_sheet", {}).get("total_amount", 0)
 
 success, total_calc = call_endpoint(
@@ -159,26 +157,17 @@ success, total_calc = call_endpoint(
 )
 
 print("\n" + "=" * 80)
-print("TOTAL AMOUNT VALIDATION")
+print("TOTAL VERIFICATION")
 print("=" * 80)
-if success:
-    print(f"Calculated Total:        {total_calc['calculated_total']:.2f} CHF")
-    print(f"Employee Reported Total: {total_calc['employee_reported_total']:.2f} CHF")
-    print(f"Match:                   {'YES' if total_calc['matched'] else 'NO'}")
-    if not total_calc["matched"]:
-        print(f"\n>>> ALERT: {total_calc['discrepancy_message']}")
+print(f"System Calculated: {total_calc['calculated_total']:.2f} CHF")
+print(f"Employee Claimed:  {total_calc['employee_reported_total']:.2f} CHF")
+print(f"Match: {'YES' if total_calc['matched'] else 'NO'}")
+if not total_calc["matched"]:
+    print(f"Discrepancy: {total_calc['discrepancy_amount']:.2f} CHF")
 
-# STEP 6: Enrich Categories
-print("\n[5/9] Enriching categories...")
+# STEP 6: Enrich Categories (Silent)
+print("\nEnriching categories...")
 enriched_categories = []
-
-print("\n" + "=" * 80)
-print("CATEGORY ENRICHMENT RESULTS")
-print("=" * 80)
-print(
-    f"{'Invoice':<10} {'Vendor':<25} {'Existing Category':<25} {'Suggested':<20} {'Confidence':<12}"
-)
-print("-" * 80)
 
 for idx, textract_result in enumerate(textract_results):
     if not textract_result:
@@ -205,33 +194,23 @@ for idx, textract_result in enumerate(textract_results):
     )
 
     if success:
-        vendor = textract_result.get("vendor", "Unknown")[:24]
-        existing = (existing_category or "None")[:24]
-        suggested = result["suggested_category"]
-        confidence = f"{result['confidence']:.2f}"
-
-        print(
-            f"INV-{idx+1:<6} {vendor:<25} {existing:<25} {suggested:<20} {confidence:<12}"
-        )
-        enriched_categories.append(suggested)
+        enriched_categories.append(result["suggested_category"])
     else:
         enriched_categories.append("Other")
 
-# STEP 7: Fetch Policies (minimal output)
-print("\n[6/9] Fetching company policies...")
+# STEP 7: Fetch Policies (Silent)
+print("Fetching policies...")
 success, policies = call_endpoint("/fetch-policies", {"company_id": COMPANY_ID})
-if success:
-    print(f"OK - Loaded {len(policies['categories'])} policy categories")
 
 # STEP 8: Validate Policies
-print("\n[7/9] Validating policy compliance...")
+print("Validating policy compliance...")
 policy_validations = []
 
 print("\n" + "=" * 80)
-print("POLICY COMPLIANCE VALIDATION")
+print("POLICY COMPLIANCE")
 print("=" * 80)
 print(
-    f"{'Invoice':<10} {'Category':<20} {'Amount':<12} {'Max Limit':<12} {'Compliant':<12}"
+    f"{'#':<4} {'Category':<20} {'Amount':<12} {'Limit':<12} {'Status':<15} {'Violation'}"
 )
 print("-" * 80)
 
@@ -256,22 +235,21 @@ for idx, category in enumerate(enriched_categories):
     )
 
     if success:
-        amount = f"{validation.get('verified_amount', 0):.2f}"
-        max_limit = f"{result['max_amount']:.2f}" if result["max_amount"] else "N/A"
-        compliant = "YES" if result["compliant"] else "NO"
-
-        print(
-            f"INV-{idx+1:<6} {category:<20} {amount:<12} {max_limit:<12} {compliant:<12}"
-        )
+        amt = f"{validation.get('verified_amount', 0):.2f}"
+        limit = f"{result['max_amount']:.2f}" if result["max_amount"] else "N/A"
+        status = "COMPLIANT" if result["compliant"] else "VIOLATED"
+        violation = ""
 
         if not result["compliant"] and result["violations"]:
-            for violation in result["violations"]:
-                print(f"         >>> {violation['severity']}: {violation['message']}")
+            violation = result["violations"][0]["message"][:50]
 
+        print(
+            f"{idx+1:<4} {category:<20} {amt:<12} {limit:<12} {status:<15} {violation}"
+        )
         policy_validations.append(result)
 
-# STEP 9: Format Report (minimal output)
-print("\n[8/9] Formatting report...")
+# STEP 9: Format Report (Silent)
+print("\nGenerating report...")
 success, report_data = call_endpoint(
     "/format-report",
     {
@@ -284,11 +262,9 @@ success, report_data = call_endpoint(
         "policy_validations": policy_validations,
     },
 )
-if success:
-    print("OK - Report generated")
 
-# STEP 10: Post to Odoo
-print("\n[9/9] Posting comment to Odoo...")
+# STEP 10: Post to Odoo (Silent)
+print("Posting to Odoo...")
 if report_data:
     success, result = call_endpoint(
         "/post-odoo-comment",
@@ -298,12 +274,10 @@ if report_data:
             **ODOO_CONFIG,
         },
     )
-    if success:
-        print("OK - Comment posted to Odoo chatter")
 
 # SUMMARY
 print("\n" + "=" * 80)
-print("TEST COMPLETE - SUMMARY")
+print("SUMMARY")
 print("=" * 80)
 
 valid_validations = [v for v in validation_results if v]
@@ -311,19 +285,17 @@ ocr_disagreements = sum(1 for v in valid_validations if not v["ocr_consensus"])
 amount_mismatches = sum(1 for v in valid_validations if not v["amount_matched"])
 policy_violations = sum(1 for p in policy_validations if not p["compliant"])
 
-print(f"Total Invoices:        {len(expense_lines)}")
-print(f"Successfully Processed: {len(valid_validations)}")
-print(f"OCR Disagreements:     {ocr_disagreements}")
-print(f"Amount Mismatches:     {amount_mismatches}")
-print(f"Total Match:           {'YES' if total_calc['matched'] else 'NO'}")
-print(f"Policy Violations:     {policy_violations}")
+print(f"Total Invoices Processed: {len(valid_validations)}")
+print(f"OCR Disagreements: {ocr_disagreements}")
+print(f"Amount Mismatches: {amount_mismatches}")
+print(f"Total Calculation: {'CORRECT' if total_calc['matched'] else 'INCORRECT'}")
+print(f"Policy Violations: {policy_violations}")
 
 print("\n" + "=" * 80)
-print("MANUAL VERIFICATION CHECKLIST:")
+print("NEXT STEPS:")
 print("=" * 80)
-print("[ ] Check invoices with 'NO' consensus - verify which OCR is correct")
-print("[ ] Check invoices with 'NO' match - verify actual invoice amounts")
-print("[ ] Check total calculation matches your manual sum")
-print("[ ] Check category enrichment makes sense for vendors")
-print("[ ] Check Odoo chatter for posted report")
+print("1. Open Odoo expense sheet in browser")
+print("2. Compare amounts above with invoice attachments")
+print("3. Verify categories make sense")
+print("4. Check Odoo chatter for posted report")
 print("=" * 80 + "\n")
