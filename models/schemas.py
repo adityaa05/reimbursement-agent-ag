@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 
@@ -64,7 +64,6 @@ class DualOCRValidationResponse(BaseModel):
 
 
 class TotalCalculationRequest(BaseModel):
-
     individual_validations: List[DualOCRValidationResponse]
     employee_reported_total: float
     currency: str = "CHF"
@@ -79,12 +78,62 @@ class TotalCalculationResponse(BaseModel):
     currency: str
 
 
+class EnrichCategoryRequest(BaseModel):
+    vendor: Optional[str] = None
+    date: Optional[str] = None
+    time: Optional[str] = None
+    existing_category: Optional[str] = None
+    invoice_id: str
+    company_id: str = "hashgraph_inc"
+
+
+class EnrichCategoryResponse(BaseModel):
+    invoice_id: str
+    suggested_category: str
+    confidence: float
+    rule_matched: str
+    fallback_used: bool
+
+
+class PolicyFetchRequest(BaseModel):
+    company_id: str = "hashgraph_inc"
+    categories: Optional[List[str]] = Field(
+        default=None, description="Optional: Filter specific categories"
+    )
+
+
+class PolicyViolation(BaseModel):
+    rule: str
+    message: str
+    severity: str = "ERROR"
+
+
+class PolicyValidationRequest(BaseModel):
+    category: str
+    amount: float
+    currency: str = "CHF"
+    vendor: Optional[str] = None
+    has_receipt: bool = True
+    has_attendees: Optional[bool] = None
+    invoice_age_days: Optional[int] = None
+    company_id: str = "hashgraph_inc"
+
+
+class PolicyValidationResponse(BaseModel):
+    compliant: bool
+    violations: List[PolicyViolation]
+    category_found: bool
+    max_amount: Optional[float] = None
+
+
 class ReportFormatterRequest(BaseModel):
     expense_sheet_id: int
     expense_sheet_name: str
     employee_name: str
-    ocr_validations: List[DualOCRValidationResponse]
+    dual_ocr_validations: List[DualOCRValidationResponse]
     total_validation: TotalCalculationResponse
+    categories: Optional[List[str]] = None
+    policy_validations: Optional[List[PolicyValidationResponse]] = None
 
 
 class ReportFormatterResponse(BaseModel):
