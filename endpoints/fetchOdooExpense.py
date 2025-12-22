@@ -1,10 +1,6 @@
 from fastapi import APIRouter, HTTPException
 import requests
-from models.schemas import (
-    OdooCommentRequest,
-    OdooCommentResponse,
-    OdooExpenseFetchRequest,
-)
+from models.schemas import OdooExpenseFetchRequest
 
 router = APIRouter()
 
