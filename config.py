@@ -5,9 +5,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ODOO_URL = os.getenv("ODOO_URL")
-DATABASE = os.getenv("DATABASE")
-USERNAME = os.getenv("USERNAME")
-PASSWORD = os.getenv("PASSWORD")
+ODOO_DB = os.getenv("ODOO_DB")
+ODOO_USERNAME = os.getenv("ODOO_USERNAME")
+ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
 
 # AWS Textract client
 textract_client = boto3.client(
