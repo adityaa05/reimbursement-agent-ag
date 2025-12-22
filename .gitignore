@@ -19,3 +19,5 @@ uv.lock
 
 # Logs
 *.log
+downloads/signal-2025-09-25-160356.jpeg
+pyproject.toml
