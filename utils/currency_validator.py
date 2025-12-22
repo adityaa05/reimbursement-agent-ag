@@ -3,19 +3,32 @@ from utils.currency_detect import is_no_decimal_currency
 
 
 def is_reasonable_expense_amount(amount: float, currency: Optional[str] = None) -> bool:
+    """
+    FIXED: More permissive limits to reduce Textract failures
+
+    Old limits: 0.50 - 100,000
+    New limits: 0.01 - 1,000,000
+    """
     if amount is None:
         return False
 
     # Currencies with no decimal places (use larger numbers)
     if currency and is_no_decimal_currency(currency):
-        MIN_AMOUNT = 100  # e.g., 100 JPY = ~0.70 USD
-        MAX_AMOUNT = 10000000  # e.g., 10M JPY = ~70,000 USD
+        MIN_AMOUNT = 1  # e.g., 1 JPY = ~0.007 USD (very small)
+        MAX_AMOUNT = 100000000  # e.g., 100M JPY = ~700,000 USD (large corporate)
     else:
-        # Standard currencies (most of the world)
-        MIN_AMOUNT = 0.50  # Minimum expense (any currency)
-        MAX_AMOUNT = 100000  # Maximum employee expense (any currency)
+        # FIXED: More permissive for standard currencies
+        MIN_AMOUNT = 0.01  # Was 0.50, now accept even tiny amounts
+        MAX_AMOUNT = 1000000  # Was 100,000, now accept large expenses (flights, hotels)
 
-    return MIN_AMOUNT <= amount <= MAX_AMOUNT
+    is_valid = MIN_AMOUNT <= amount <= MAX_AMOUNT
+
+    if not is_valid:
+        print(
+            f"[VALIDATOR] Amount {amount} {currency} outside range [{MIN_AMOUNT}, {MAX_AMOUNT}]"
+        )
+
+    return is_valid
 
 
 def calculate_currency_priority(currency: str, company_currency: str = "CHF") -> int:
@@ -47,7 +60,8 @@ def validate_currency_code(currency: str) -> bool:
 
 
 def get_min_max_for_currency(currency: str) -> tuple:
+    """FIXED: Return new permissive limits"""
     if is_no_decimal_currency(currency):
-        return (100, 10000000)
+        return (1, 100000000)
     else:
-        return (0.50, 100000)
+        return (0.01, 1000000)  # Was (0.50, 100000)
