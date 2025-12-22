@@ -52,8 +52,6 @@ class TotalCalculationResponse(BaseModel):
 
 
 class ReportFormatterRequest(BaseModel):
-    """Request to format final report"""
-
     expense_sheet_id: int
     expense_sheet_name: str
     employee_name: str
@@ -79,3 +77,21 @@ class OdooCommentResponse(BaseModel):
     success: bool
     message_id: Optional[int] = None
     error: Optional[str] = None
+
+
+class OdooOCRRequest(BaseModel):
+    expense_line_id: int  # Odoo expense line ID
+    odoo_url: str
+    odoo_db: str
+    odoo_username: str
+    odoo_password: str
+
+
+class OdooOCRResponse(BaseModel):
+    invoice_id: str
+    vendor: Optional[str] = None
+    date: Optional[str] = None
+    total_amount: Optional[float] = None
+    currency: Optional[str] = "CHF"
+    source: str = "zoho_ocr"
+    line_items: List[Dict[str, Any]] = []
