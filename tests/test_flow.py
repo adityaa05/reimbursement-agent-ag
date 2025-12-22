@@ -18,7 +18,7 @@ ODOO_CONFIG = {
     "odoo_username": os.getenv("ODOO_USERNAME"),
     "odoo_password": os.getenv("ODOO_PASSWORD"),
 }
-TEST_EXPENSE_SHEET_ID = 542
+TEST_EXPENSE_SHEET_ID = 370
 COMPANY_ID = "hashgraph_inc"
 
 if not all(ODOO_CONFIG.values()):
