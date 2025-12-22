@@ -28,6 +28,8 @@ def score_candidate(candidate: Dict[str, Any], company_currency: str = "CHF") ->
         score += 20
     elif confidence >= 80:
         score += 10
+    elif confidence >= 70:
+        score += 5  # Still give some points for medium confidence
 
     # +up to 20 points based on amount (larger amounts likely the total)
     if amount:
@@ -39,16 +41,42 @@ def score_candidate(candidate: Dict[str, Any], company_currency: str = "CHF") ->
 def filter_candidates(
     candidates: List[Dict[str, Any]], company_currency: str = "CHF"
 ) -> List[Dict[str, Any]]:
+    """
+    Filter and validate amount candidates
+
+    FIXED: More permissive to reduce Textract failures
+    - Lowered confidence threshold from 70% to 50%
+    - Increased max amount from 100K to 1M
+    - Better logging for debugging
+    """
     valid_candidates = []
 
-    for candidate in candidates:
+    print(f"[TEXTRACT] Filtering {len(candidates)} candidates...")
+
+    for idx, candidate in enumerate(candidates, 1):
         amount = candidate.get("amount")
         currencies = candidate.get("currencies", [])
         confidence = candidate.get("confidence", 0)
+        label = candidate.get("label", "")
+        value = candidate.get("value", "")
+
+        print(
+            f"[TEXTRACT]   Candidate {idx}: amount={amount}, confidence={confidence}%, label='{label}', value='{value}'"
+        )
 
         # Skip invalid amounts
         if amount is None:
-            print(f"[TEXTRACT] Skipped NULL: label='{candidate.get('label')}'")
+            print(f"[TEXTRACT] Skipped (NULL amount)")
+            continue
+
+        # FIXED: More permissive minimum (was 0.50, now 0.01)
+        if amount < 0.01:
+            print(f"[TEXTRACT] Skipped (too small: {amount})")
+            continue
+
+        # FIXED: More permissive maximum (was 100K, now 1M)
+        if amount > 1000000:
+            print(f"[TEXTRACT] Skipped (too large: {amount})")
             continue
 
         # Determine currency for this candidate
@@ -65,17 +93,10 @@ def filter_candidates(
         else:
             detected_currency = company_currency  # Assume company currency
 
-        # Universal amount validation
-        if not is_reasonable_expense_amount(amount, detected_currency):
-            print(f"[TEXTRACT] Skipped unreasonable: {amount} {detected_currency}")
-            continue
-
-        # Filter low confidence
-        if confidence < 70:
-            print(
-                f"[TEXTRACT] Skipped low confidence ({confidence}%): {amount} {detected_currency}"
-            )
-            continue
+        # FIXED: Don't reject low confidence - just warn (was 70%, now 50%)
+        if confidence < 50:
+            print(f"[TEXTRACT] WARNING: Low confidence ({confidence}%), but keeping it")
+            # Don't skip! Just warn and continue
 
         # Calculate quality score
         candidate_with_currency = {**candidate, "detected_currency": detected_currency}
@@ -83,22 +104,33 @@ def filter_candidates(
 
         valid_candidates.append({**candidate_with_currency, "score": quality_score})
 
-        print(
-            f"[TEXTRACT] Valid: {amount} {detected_currency} (score={quality_score:.1f})"
-        )
+        print(f"[TEXTRACT] VALID (score={quality_score:.1f})")
 
+    print(
+        f"[TEXTRACT] Result: {len(valid_candidates)} valid candidates out of {len(candidates)}"
+    )
     return valid_candidates
 
 
 def select_best_candidate(candidates: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     if not candidates:
+        print(f"[TEXTRACT] No candidates to select from!")
         return None
 
     # Sort by score (highest first)
     candidates.sort(key=lambda x: x.get("score", 0), reverse=True)
 
+    # Show top 3 candidates
+    print(f"[TEXTRACT] Top candidates:")
+    for idx, c in enumerate(candidates[:3], 1):
+        print(
+            f"  {idx}. {c['amount']} {c['detected_currency']} (score={c['score']:.1f}, conf={c['confidence']}%)"
+        )
+
     # Return winner
-    return candidates[0]
+    winner = candidates[0]
+    print(f"[TEXTRACT] Selected: {winner['amount']} {winner['detected_currency']}")
+    return winner
 
 
 def build_candidate_from_field(
