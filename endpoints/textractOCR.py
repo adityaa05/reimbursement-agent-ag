@@ -129,7 +129,7 @@ async def textract_ocr(request: OCRRequest):
         selected_currency = winner["detected_currency"]
 
         print(
-            f"[TEXTRACT] ✓✓✓ SELECTED: {selected_amount} {selected_currency} (score={winner['score']:.1f})"
+            f"[TEXTRACT] SELECTED: {selected_amount} {selected_currency} (score={winner['score']:.1f})"
         )
 
         # One last check with detected currency
