@@ -1,8 +1,15 @@
 from fastapi import APIRouter, HTTPException
 import base64
+from collections import Counter
 from config import textract_client
 from models.schemas import OCRRequest, OCRResponse
 from utils.parsers import parse_amount
+from utils.textract_scorer import (
+    build_candidate_from_field,
+    filter_candidates,
+    select_best_candidate,
+)
+from utils.currency_validator import is_reasonable_expense_amount
 
 router = APIRouter()
 
@@ -19,8 +26,15 @@ async def textract_ocr(request: OCRRequest):
         # Parse response
         expense_docs = response.get("ExpenseDocuments", [])
         if not expense_docs:
-            raise HTTPException(
-                status_code=400, detail="No expense data found in image"
+            # Return None instead of failing - let Odoo OCR handle it
+            return OCRResponse(
+                invoice_id=request.invoice_id,
+                vendor=None,
+                date=None,
+                time=None,
+                total_amount=None,
+                currency="CHF",  # Default
+                line_items=[],
             )
 
         doc = expense_docs[0]
@@ -32,13 +46,11 @@ async def textract_ocr(request: OCRRequest):
             "date": None,
             "time": None,
             "total_amount": None,
-            "currency": "CHF",
+            "currency": "CHF",  # Will be overridden
             "line_items": [],
         }
 
         total_candidates = []
-
-        # Extract fields
         for field in summary_fields:
             field_type = field.get("Type", {}).get("Text", "")
             field_value = field.get("ValueDetection", {}).get("Text", "")
@@ -50,42 +62,87 @@ async def textract_ocr(request: OCRRequest):
             elif field_type == "INVOICE_RECEIPT_DATE":
                 extracted_data["date"] = field_value
             elif field_type == "TOTAL":
-                total_candidates.append(
-                    {
-                        "value": field_value,
-                        "label": label_text,
-                        "amount": parse_amount(field_value),
-                    }
+                parsed_amount = parse_amount(field_value)
+
+                # Build candidate with currency detection
+                candidate = build_candidate_from_field(
+                    field_value=field_value,
+                    label_text=label_text,
+                    confidence=confidence,
+                    amount=parsed_amount,
                 )
 
-        chf_total = None
-        eur_total = None
-        fallback_total = None
+                total_candidates.append(candidate)
 
+        print(
+            f"[TEXTRACT] Found {len(total_candidates)} candidates for {request.invoice_id}"
+        )
+
+        # Detect company currency (default CHF, can be configured)
+        # TODO: Make this configurable per client via environment variable
+        company_currency = "CHF"
+
+        # Auto-detect most common currency from invoice
+        all_detected_currencies = []
         for candidate in total_candidates:
-            label_upper = (candidate["label"] or "").upper()
-            value_upper = (candidate["value"] or "").upper()
+            all_detected_currencies.extend(candidate["currencies"])
 
-            if "CHF" in label_upper or "CHF" in value_upper:
-                chf_total = candidate["amount"]
-            elif "EUR" in label_upper or "EUR" in value_upper:
-                eur_total = candidate["amount"]
-            else:
-                if fallback_total is None:
-                    fallback_total = candidate["amount"]
+        if all_detected_currencies:
+            currency_counts = Counter(all_detected_currencies)
+            most_common = currency_counts.most_common(1)[0][0]
+            # Only log if different from company currency
+            if most_common != company_currency and currency_counts[most_common] > 1:
+                print(f"[TEXTRACT] Invoice primarily in {most_common}")
 
-        # Prioritize: CHF > fallback > EUR
-        if chf_total is not None:
-            extracted_data["total_amount"] = chf_total
-            extracted_data["currency"] = "CHF"
-        elif fallback_total is not None:
-            extracted_data["total_amount"] = fallback_total
-            extracted_data["currency"] = "CHF"
-        elif eur_total is not None:
-            extracted_data["total_amount"] = eur_total
-            extracted_data["currency"] = "EUR"
+        # Filter and score candidates
+        valid_candidates = filter_candidates(total_candidates, company_currency)
 
-        # Extract line items
+        if not valid_candidates:
+            print(f"[TEXTRACT] No valid candidates found after filtering")
+            print(f"[TEXTRACT] Candidates analyzed: {len(total_candidates)}")
+            return OCRResponse(
+                invoice_id=request.invoice_id,
+                vendor=extracted_data["vendor"],
+                date=extracted_data["date"],
+                time=None,
+                total_amount=None,
+                currency=company_currency,
+                line_items=[],
+            )
+
+        # Pick the winner
+        winner = select_best_candidate(valid_candidates)
+
+        if not winner:
+            print(f"[TEXTRACT] No winner selected")
+            return OCRResponse(
+                invoice_id=request.invoice_id,
+                vendor=extracted_data["vendor"],
+                date=extracted_data["date"],
+                time=None,
+                total_amount=None,
+                currency=company_currency,
+                line_items=[],
+            )
+
+        selected_amount = winner["amount"]
+        selected_currency = winner["detected_currency"]
+
+        print(
+            f"[TEXTRACT] ✓✓✓ SELECTED: {selected_amount} {selected_currency} (score={winner['score']:.1f})"
+        )
+
+        # One last check with detected currency
+        if not is_reasonable_expense_amount(selected_amount, selected_currency):
+            print(
+                f"[TEXTRACT] Final check FAILED: {selected_amount} {selected_currency}"
+            )
+            selected_amount = None
+            selected_currency = company_currency
+
+        extracted_data["total_amount"] = selected_amount
+        extracted_data["currency"] = selected_currency
+
         line_items_groups = doc.get("LineItemGroups", [])
         for group in line_items_groups:
             for item in group.get("LineItems", []):
@@ -105,4 +162,14 @@ async def textract_ocr(request: OCRRequest):
         return OCRResponse(**extracted_data)
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Textract OCR failed: {str(e)}")
+        print(f"[TEXTRACT] CRITICAL ERROR: {str(e)}")
+        # Return empty result instead of crashing - let Odoo OCR handle it
+        return OCRResponse(
+            invoice_id=request.invoice_id,
+            vendor=None,
+            date=None,
+            time=None,
+            total_amount=None,
+            currency="CHF",
+            line_items=[],
+        )
