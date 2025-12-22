@@ -8,7 +8,6 @@ from endpoints.odooOCR import router as odoo_ocr_router
 from endpoints.OCRValidator import router as validator_router
 from endpoints.calculateTotal import router as total_router
 from endpoints.enrichCategory import router as enrich_router
-from endpoints.policyStore import router as policy_router
 from endpoints.policyValidator import router as validate_policy_router
 from endpoints.formatReport import router as report_router
 from endpoints.postOdooComment import router as comment_router
@@ -36,7 +35,6 @@ app.include_router(odoo_ocr_router, tags=["OCR"])
 app.include_router(validator_router, tags=["Validation"])
 app.include_router(total_router, tags=["Validation"])
 app.include_router(enrich_router, tags=["Enrichment"])
-app.include_router(policy_router, tags=["Policy"])
 app.include_router(validate_policy_router, tags=["Policy"])
 app.include_router(report_router, tags=["Reporting"])
 app.include_router(comment_router, tags=["Odoo Integration"])
