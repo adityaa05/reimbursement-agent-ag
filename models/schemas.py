@@ -34,3 +34,48 @@ class OCRValidationResponse(BaseModel):
     discrepancy_message: Optional[str] = None
     discrepancy_amount: Optional[float] = None
     currency: str
+
+
+class TotalCalculationRequest(BaseModel):
+    individual_validations: List[OCRValidationResponse]
+    employee_reported_total: float
+    currency: str = "CHF"
+
+
+class TotalCalculationResponse(BaseModel):
+    calculated_total: float
+    employee_reported_total: float
+    matched: bool
+    discrepancy_amount: Optional[float] = None
+    discrepancy_message: Optional[str] = None
+    currency: str
+
+
+class ReportFormatterRequest(BaseModel):
+    """Request to format final report"""
+
+    expense_sheet_id: int
+    expense_sheet_name: str
+    employee_name: str
+    ocr_validations: List[OCRValidationResponse]
+    total_validation: TotalCalculationResponse
+
+
+class ReportFormatterResponse(BaseModel):
+    formatted_comment: str
+    html_comment: str
+
+
+class OdooCommentRequest(BaseModel):
+    expense_sheet_id: int
+    comment_html: str
+    odoo_url: str
+    odoo_db: str
+    odoo_username: str
+    odoo_password: str
+
+
+class OdooCommentResponse(BaseModel):
+    success: bool
+    message_id: Optional[int] = None
+    error: Optional[str] = None
