@@ -43,11 +43,6 @@ def filter_candidates(
 ) -> List[Dict[str, Any]]:
     """
     Filter and validate amount candidates
-
-    FIXED: More permissive to reduce Textract failures
-    - Lowered confidence threshold from 70% to 50%
-    - Increased max amount from 100K to 1M
-    - Better logging for debugging
     """
     valid_candidates = []
 
@@ -91,9 +86,9 @@ def filter_candidates(
             ]
             detected_currency = max(currencies_with_priority, key=lambda x: x[1])[0]
         else:
-            detected_currency = company_currency  # Assume company currency
+            detected_currency = company_currency  # ompany currency
 
-        # FIXED: Don't reject low confidence - just warn (was 70%, now 50%)
+        # FIXED: Don't reject low confidence
         if confidence < 50:
             print(f"[TEXTRACT] WARNING: Low confidence ({confidence}%), but keeping it")
             # Don't skip! Just warn and continue
