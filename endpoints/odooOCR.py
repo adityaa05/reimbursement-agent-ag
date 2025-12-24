@@ -10,7 +10,6 @@ router = APIRouter()
 async def odoo_ocr(request: OdooOCRRequest):
     """
     Extract invoice data using Odoo's built-in OCR
-
     FIXED: Proper vendor string cleaning to enable keyword matching
     """
     try:
@@ -90,7 +89,6 @@ async def odoo_ocr(request: OdooOCRRequest):
         # ================================================================
         # CRITICAL FIX: Proper vendor name extraction and cleaning
         # ================================================================
-
         # Extract raw vendor components
         name = line_data.get("name", "")
         desc = line_data.get("description", "")
@@ -118,8 +116,18 @@ async def odoo_ocr(request: OdooOCRRequest):
         vendor_clean = re.sub(r"\s+", " ", vendor_clean).strip()
 
         print(f"[ODOO OCR] Vendor extraction:")
-        print(f"  Raw:     '{vendor_raw[:50]}'")
+        print(f"  Raw: '{vendor_raw[:50]}'")
         print(f"  Cleaned: '{vendor_clean[:50]}'")
+
+        # ================================================================
+        # NOTE: Odoo hr.expense does NOT store individual line items
+        # Line items are only available in account.move (invoices)
+        # For expenses, we only get the total amount
+        # ================================================================
+        line_items = []
+
+        print(f"[ODOO OCR] Line items not available in hr.expense model")
+        print(f"[ODOO OCR] Total amount: {line_data.get('total_amount')} {currency}")
 
         # Return OCR data (Odoo auto-populates these fields from invoice scan)
         return OdooOCRResponse(
@@ -128,7 +136,7 @@ async def odoo_ocr(request: OdooOCRRequest):
             date=line_data.get("date"),
             total_amount=line_data.get("total_amount"),
             currency=currency,
-            line_items=[],  # Odoo doesn't break down line items
+            line_items=line_items,  # Empty - hr.expense doesn't store line items
             source="odoo_ocr",
         )
 
