@@ -14,6 +14,7 @@ from endpoints.formatReport import router as report_router
 from endpoints.postOdooComment import router as comment_router
 from endpoints.fetchPolicies import router as fetch_policies_router
 from endpoints.approvalRouter import router as approval_router
+from endpoints.processExpenseRequest import router as process_router
 
 
 app = FastAPI(
@@ -43,6 +44,7 @@ app.include_router(report_router, tags=["Reporting"])
 app.include_router(comment_router, tags=["Odoo Integration"])
 app.include_router(fetch_policies_router, tags=["Policy"])
 app.include_router(approval_router, tags=["Workflow"])
+app.include_router(process_router, tags=["Master Endpoint"])
 
 
 @app.get("/")
@@ -50,13 +52,15 @@ async def root():
     return {
         "status": "running",
         "service": "Expense Reimbursement API",
-        "version": "1.0.0",
-        "phase": "Phase 1 - Development (Policy-Driven)",
+        "version": "3.0.0",
+        "phase": "Phase 1 - Development",
+        "architecture": "Master Endpoint Pattern",
+        "master_endpoint": "/process-expense-request",
         "endpoints": {
+            "master": "/process-expense-request (⭐ USE THIS)",
             "fetch": "/fetch-odoo-expense",
-            # "textract_ocr": "/textract-ocr",
-            "zoho_ocr": "/zoho-ocr",
-            "validate_dual_ocr": "/validate-ocr",
+            "ocr": "/odoo-ocr",
+            "validate_ocr": "/validate-ocr",
             "calculate_total": "/calculate-total",
             "enrich_category": "/enrich-category",
             "fetch_policies": "/fetch-policies",
