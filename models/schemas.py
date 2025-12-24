@@ -1,6 +1,10 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
+# ============================================
+# OCR SCHEMAS (NO CHANGES NEEDED)
+# ============================================
+
 
 class OCRRequest(BaseModel):
     image_base64: str
@@ -31,40 +35,51 @@ class OdooOCRResponse(BaseModel):
     invoice_id: str
     vendor: Optional[str] = None
     date: Optional[str] = None
+    time: Optional[str] = None  # ✅ Added time field
     total_amount: Optional[float] = None
     currency: Optional[str] = "CHF"
     line_items: List[Dict[str, Any]] = []
     source: str = "odoo_ocr"
 
 
-class DualOCRValidationRequest(BaseModel):
-    textract_output: OCRResponse
-    odoo_output: OdooOCRResponse
+# ============================================
+# VALIDATION SCHEMAS (UPDATED FOR SINGLE OCR)
+# ============================================
+
+
+class SingleOCRValidationRequest(BaseModel):  # RENAMED from DualOCRValidationRequest
+    """Request for single OCR validation (Odoo only)"""
+
+    odoo_output: OdooOCRResponse  # ✅ Only Odoo OCR
     employee_claim: float
     invoice_id: str
     currency: str = "CHF"
 
 
-class DualOCRValidationResponse(BaseModel):
+class SingleOCRValidationResponse(BaseModel):  # RENAMED from DualOCRValidationResponse
+    """Response for single OCR validation"""
+
     invoice_id: str
-    textract_amount: Optional[float] = None
+    # ❌ REMOVED: textract_amount: Optional[float] = None
     odoo_amount: Optional[float] = None
     verified_amount: Optional[float] = None
     employee_reported_amount: float
-
-    ocr_consensus: bool
-    ocr_mismatch_message: Optional[str] = None
-
+    # ❌ REMOVED: ocr_consensus: bool
+    # ❌ REMOVED: ocr_mismatch_message: Optional[str] = None
     amount_matched: bool
     discrepancy_message: Optional[str] = None
     discrepancy_amount: Optional[float] = None
-
-    risk_level: str
+    risk_level: str  # "LOW", "MEDIUM", "HIGH", "CRITICAL"
     currency: str
 
 
+# ============================================
+# TOTAL CALCULATION (UPDATED REFERENCE)
+# ============================================
+
+
 class TotalCalculationRequest(BaseModel):
-    individual_validations: List[DualOCRValidationResponse]
+    individual_validations: List[SingleOCRValidationResponse]  # UPDATED type
     employee_reported_total: float
     currency: str = "CHF"
 
@@ -76,6 +91,11 @@ class TotalCalculationResponse(BaseModel):
     discrepancy_amount: Optional[float] = None
     discrepancy_message: Optional[str] = None
     currency: str
+
+
+# ============================================
+# ENRICHMENT & POLICY SCHEMAS (NO CHANGES)
+# ============================================
 
 
 class EnrichCategoryRequest(BaseModel):
@@ -126,11 +146,18 @@ class PolicyValidationResponse(BaseModel):
     max_amount: Optional[float] = None
 
 
+# ============================================
+# REPORTING SCHEMAS (UPDATED REFERENCE)
+# ============================================
+
+
 class ReportFormatterRequest(BaseModel):
     expense_sheet_id: int
     expense_sheet_name: str
     employee_name: str
-    dual_ocr_validations: List[DualOCRValidationResponse]
+    dual_ocr_validations: List[
+        SingleOCRValidationResponse
+    ]  # UPDATED type (kept field name for compatibility)
     total_validation: TotalCalculationResponse
     categories: Optional[List[str]] = None
     policy_validations: Optional[List[PolicyValidationResponse]] = None
@@ -139,6 +166,11 @@ class ReportFormatterRequest(BaseModel):
 class ReportFormatterResponse(BaseModel):
     formatted_comment: str
     html_comment: str
+
+
+# ============================================
+# ODOO INTEGRATION SCHEMAS (NO CHANGES)
+# ============================================
 
 
 class OdooCommentRequest(BaseModel):
@@ -163,7 +195,11 @@ class OdooExpenseFetchRequest(BaseModel):
     odoo_username: str
     odoo_password: str
 
-#---
+
+# ============================================
+# POLICY DATA MODELS (NO CHANGES)
+# ============================================
+
 
 class EnrichmentRules(BaseModel):
     """Rules for automatic category enrichment"""

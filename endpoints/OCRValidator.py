@@ -1,125 +1,94 @@
 from fastapi import APIRouter, HTTPException
-from models.schemas import DualOCRValidationRequest, DualOCRValidationResponse
+from models.schemas import SingleOCRValidationRequest, SingleOCRValidationResponse
 
 router = APIRouter()
 
 
-@router.post("/validate-ocr", response_model=DualOCRValidationResponse)
-async def validate_ocr(request: DualOCRValidationRequest):
-    # Step 1: Check if Textract and Odoo OCR agree; Step 2: Compare consensus amount with employee claim
+@router.post("/validate-ocr", response_model=SingleOCRValidationResponse)
+async def validate_ocr(request: SingleOCRValidationRequest):
+    """
+    Validates Odoo OCR extracted amount against employee's claimed amount.
+
+    Architecture v3.0: Single OCR source (Odoo only)
+    - No Textract comparison
+    - No OCR consensus check
+    - Risk based purely on discrepancy size
+
+    Risk Levels:
+    - LOW: Amount matches or small discrepancy (< 5 CHF)
+    - MEDIUM: Moderate discrepancy (5-50 CHF)
+    - HIGH: Large discrepancy (50-100 CHF)
+    - CRITICAL: Very large discrepancy (> 100 CHF) or OCR failed
+    """
+
     try:
-        textract_amt = request.textract_output.total_amount
         odoo_amt = request.odoo_output.total_amount
         claimed_amt = request.employee_claim
 
-        # Handle missing OCR data
-        if textract_amt is None and odoo_amt is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Both OCR engines failed to extract amount - manual review required",
+        # ============================================
+        # HANDLE OCR FAILURE
+        # ============================================
+        if odoo_amt is None:
+            return SingleOCRValidationResponse(
+                invoice_id=request.invoice_id,
+                odoo_amount=None,
+                verified_amount=None,
+                employee_reported_amount=claimed_amt,
+                amount_matched=False,
+                discrepancy_message="Odoo OCR failed to extract amount - manual review required",
+                discrepancy_amount=None,
+                risk_level="CRITICAL",
+                currency=request.currency,
             )
 
-        # Handle single OCR failure - Textract missing
-        if textract_amt is None:
-            amount_matched = abs(odoo_amt - claimed_amt) < 0.01
-            return DualOCRValidationResponse(
+        # ============================================
+        # VALIDATE AMOUNT (HARD-CODED LOGIC - NO AI)
+        # ============================================
+        tolerance = 0.01
+        amount_matched = abs(odoo_amt - claimed_amt) < tolerance
+
+        if amount_matched:
+            # Perfect match
+            return SingleOCRValidationResponse(
                 invoice_id=request.invoice_id,
-                textract_amount=None,
                 odoo_amount=odoo_amt,
                 verified_amount=odoo_amt,
                 employee_reported_amount=claimed_amt,
-                ocr_consensus=False,
-                ocr_mismatch_message="Textract OCR failed - using Odoo OCR only",
-                amount_matched=amount_matched,
-                discrepancy_message=(
-                    f"Value in invoice as per AG is {odoo_amt:.2f}, not {claimed_amt:.2f} as reported"
-                    if not amount_matched
-                    else None
-                ),
-                discrepancy_amount=(
-                    abs(odoo_amt - claimed_amt) if not amount_matched else 0.0
-                ),
-                risk_level="HIGH",
+                amount_matched=True,
+                discrepancy_message=None,
+                discrepancy_amount=0.0,
+                risk_level="LOW",
                 currency=request.currency,
             )
-
-        # Handle single OCR failure - Odoo missing
-        if odoo_amt is None:
-            amount_matched = abs(textract_amt - claimed_amt) < 0.01
-            return DualOCRValidationResponse(
-                invoice_id=request.invoice_id,
-                textract_amount=textract_amt,
-                odoo_amount=None,
-                verified_amount=textract_amt,
-                employee_reported_amount=claimed_amt,
-                ocr_consensus=False,
-                ocr_mismatch_message="Odoo OCR failed - using Textract OCR only",
-                amount_matched=amount_matched,
-                discrepancy_message=(
-                    f"Value in invoice as per AG is {textract_amt:.2f}, not {claimed_amt:.2f} as reported"
-                    if not amount_matched
-                    else None
-                ),
-                discrepancy_amount=(
-                    abs(textract_amt - claimed_amt) if not amount_matched else 0.0
-                ),
-                risk_level="MEDIUM",
-                currency=request.currency,
-            )
-
-        # STEP 1: Check OCR consensus
-        ocr_tolerance = 0.01
-        ocr_consensus = abs(textract_amt - odoo_amt) < ocr_tolerance
-
-        if ocr_consensus:
-            verified_amount = textract_amt
-            ocr_mismatch_message = None
-            base_risk = "LOW"
         else:
-            verified_amount = textract_amt
-            ocr_mismatch_message = f"OCR disagreement detected: Textract={textract_amt:.2f}, Odoo={odoo_amt:.2f}"
-            base_risk = "MEDIUM"
+            # Mismatch detected
+            discrepancy = abs(odoo_amt - claimed_amt)
 
-        # STEP 2: Compare verified amount with claim
-        claim_tolerance = 0.01
-        amount_matched = abs(verified_amount - claimed_amt) < claim_tolerance
-
-        if amount_matched:
-            discrepancy_message = None
-            discrepancy_amount = 0.0
-            final_risk = base_risk
-        else:
-            discrepancy_amount = abs(verified_amount - claimed_amt)
-            discrepancy_message = f"Value in invoice as per AG is {verified_amount:.2f}, not {claimed_amt:.2f} as reported"
-
-            # Risk escalation
-            if discrepancy_amount > 50:
-                final_risk = "CRITICAL"
-            elif discrepancy_amount > 10:
-                final_risk = "HIGH"
-            elif not ocr_consensus:
-                final_risk = "HIGH"
+            # ============================================
+            # RISK ASSESSMENT (HARD-CODED THRESHOLDS)
+            # ============================================
+            if discrepancy > 100:
+                risk = "CRITICAL"
+            elif discrepancy > 50:
+                risk = "HIGH"
+            elif discrepancy > 5:
+                risk = "MEDIUM"
             else:
-                final_risk = "MEDIUM"
+                risk = "LOW"
 
-        return DualOCRValidationResponse(
-            invoice_id=request.invoice_id,
-            textract_amount=textract_amt,
-            odoo_amount=odoo_amt,
-            verified_amount=verified_amount,
-            employee_reported_amount=claimed_amt,
-            ocr_consensus=ocr_consensus,
-            ocr_mismatch_message=ocr_mismatch_message,
-            amount_matched=amount_matched,
-            discrepancy_message=discrepancy_message,
-            discrepancy_amount=discrepancy_amount,
-            risk_level=final_risk,
-            currency=request.currency,
-        )
+            return SingleOCRValidationResponse(
+                invoice_id=request.invoice_id,
+                odoo_amount=odoo_amt,
+                verified_amount=odoo_amt,  # Use Odoo as single source of truth
+                employee_reported_amount=claimed_amt,
+                amount_matched=False,
+                discrepancy_message=f"Value in invoice as per AG is {odoo_amt:.2f}, not {claimed_amt:.2f} as reported",
+                discrepancy_amount=round(discrepancy, 2),
+                risk_level=risk,
+                currency=request.currency,
+            )
 
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Dual OCR validation failed: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"OCR validation failed: {str(e)}")

@@ -1,0 +1,2170 @@
+# EXPENSE REIMBURSEMENT AUTOMATION - MASTER CONTEXT PROMPT v3.0
+
+**Last Updated:** December 2024  
+**Major Changes:** Single OCR (Odoo only), Live Confluence Integration
+
+---
+
+## QUICK REFERENCE (Read This First!)
+
+**What We're Building:**
+An automated expense verification system that uses Odoo OCR for invoice extraction, validates amounts against employee claims, checks policy compliance from Confluence knowledge base, and posts findings to finance managers.
+
+**Critical Architecture Pattern:**
+```
+Zoho/Odoo → AgenticGenie Playbook → Tools (call Render endpoints) → Render (hard-coded logic)
+```
+
+**Why This Matters:**
+- AgenticGenie (GPT-4o) = Orchestration ONLY (decides which tool to call when)
+- Render endpoints = Validation logic ONLY (hard-coded Python, zero AI)
+- NEVER put validation logic in AgenticGenie - it hallucinates under load
+
+**Three Layers to Remember:**
+1. **AgenticGenie Platform** - Receives webhook, orchestrates workflow, calls tools
+2. **AgenticGenie Tools** - Configuration wrappers that point to Render endpoints (NO code)
+3. **Render Endpoints** - FastAPI with all hard-coded validation logic
+
+**What Triggers the System:**
+- Employee submits expense in Zoho/Odoo with invoices and claimed amounts
+- Zoho/Odoo sends webhook to AgenticGenie playbook (or manual trigger in Phase 1)
+- AgenticGenie calls agents → agents call tools → tools hit Render endpoints
+- Final verification comment posted back to Zoho/Odoo
+
+**Current Phase:**
+- **Development:** Render server with manual AgenticGenie triggering
+- **Production (Future):** AWS Lambda with webhook automation
+
+**Key Technologies:**
+- **OCR:** Odoo built-in OCR (single source - Textract removed due to accuracy issues)
+- **Policies:** Live Confluence API (THG Policies space) - NOT mock data
+- **Validation:** Hard-coded Python logic in FastAPI
+- **Deployment:** Render (dev) → AWS Lambda (prod)
+
+**Tool Count:** 9 tools (down from 10 - Textract removed)
+
+**Key Constraint:**
+**NEVER use AI for validation, calculations, or policy checks** - Always hard-coded logic in Render endpoints
+
+---
+
+## ROLE & OBJECTIVE
+
+You are a senior AI architect and full-stack developer working on an **Expense Reimbursement Automation System** built on the **AgenticGenie Platform**. Your task is to help design, implement, and troubleshoot this intelligent automation workflow that verifies employee expense invoices using Odoo OCR extraction, validates amounts and policy compliance from live Confluence policies, and posts structured findings to finance managers.
+
+---
+
+## CRITICAL CONSTRAINTS & LESSONS LEARNED
+
+### ❌ What We Experienced (Past Failure)
+- **Previous project using AgenticGenie FAILED MISERABLY** under heavy workload
+- The platform started **hallucinating** and did not perform as expected
+- Everything became unreliable and unusable
+- **Root cause**: AgenticGenie runs on GPT-4o via prompt execution, and we depended on AI prompts for mission-critical operations
+
+### ✅ Our Design Principle (Non-Negotiable)
+**WE CANNOT DEPEND ON PROMPTS FOR MISSION-CRITICAL OPERATIONS**
+
+This means:
+- ❌ **NEVER use AI agents/prompts for**: Amount validation, calculations, policy checks, data comparisons, or any mandatory business logic
+- ✅ **ONLY use AI for**: Variability tasks like generating summaries, formatting natural language reports, test case generation, or optional content polish
+- ✅ **ALL mission-critical logic MUST be**: Hard-coded deterministic functions in Python/JavaScript with zero AI dependency
+
+### 🎯 Our Architecture Strategy
+**AgenticGenie = Orchestration Layer ONLY**
+- AgenticGenie Playbook orchestrates the workflow (when to call which tool, in what order)
+- AgenticGenie Tools are configuration wrappers pointing to Render endpoints (NO JavaScript code)
+- External endpoints (Render in dev, Lambda in prod) contain ALL the hard-coded validation logic
+- **Never put mission-critical logic in AgenticGenie tool code** - it will use GPT-4o and hallucinate
+
+---
+
+## PLATFORM OVERVIEW: AgenticGenie
+
+AgenticGenie is an automation platform accessible at `demo.agenticgenie.click/studio` with five main sections:
+
+### 1. **Tools**
+- Configuration objects that define API endpoints to call
+- Created in 5 steps: Basic Info → Configuration → Parameters → Output → Annotation
+- Each tool has: Name, Description, API Endpoint URL, Input Parameters (typed), Output Schema, Tool Annotation
+- **Our approach**: Tools are thin wrappers - just HTTP POST configurations pointing to Render endpoints
+
+### 2. **Agents**
+- AI-powered entities that use tools to perform tasks
+- Created in 3 steps: Basic Info → Configuration (Agent Prompt) → Tools & Capabilities
+- Have: Agent prompts, assigned tools
+- **Our approach**: 4 specialized agents that orchestrate tool calls based on workflow steps
+
+### 3. **Playbooks**
+- Multi-step workflows orchestrating agents and tools
+- Created in 5 steps: Basic → Workflow → Tools & Agents → Config → Access
+- Key fields: Workflow description, Special Instructions, Helper Agents
+- **Our approach**: Playbook defines workflow steps, calls agents in sequence
+
+### 4. **Dialogues**
+- Interactive conversations with agents (not used in our project)
+
+### 5. **Executions**
+- Dashboard tracking all playbook runs with logs, timelines, and debugging info
+
+### Platform Limitations
+- **No persistent storage** - Data doesn't persist between tool calls
+- **Network restrictions** - Limited outbound access (only whitelisted domains)
+- **Execution timeouts** - Tools have timeout limits (~120 seconds)
+- **No file system access** - Cannot save files locally
+- **GPT-4o dependency** - All agents and orchestration use GPT-4o (hence our careful architecture)
+
+---
+
+## TECHNICAL ARCHITECTURE
+
+### System Overview (5 Layers)
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 1: SOURCE SYSTEM                                             │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  Zoho/Odoo Expense Management System                       │    │
+│  │  • Employee submits expense request with invoices          │    │
+│  │  • Built-in OCR extracts invoice data                      │    │
+│  │  • Sends webhook to AgenticGenie (Phase 2)                 │    │
+│  │  • Receives final verification comment                     │    │
+│  │  • Finance Manager reviews and approves/rejects            │    │
+│  └────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  │ Webhook (Phase 2) / Manual Trigger (Phase 1)
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 2: ORCHESTRATION PLATFORM                                    │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  AgenticGenie Platform (demo.agenticgenie.click)           │    │
+│  │                                                              │    │
+│  │  ExpenseVerificationPlaybook (GPT-4o orchestration)         │    │
+│  │  • Receives trigger with expense_request_id                 │    │
+│  │  • Calls 4 agents in sequence                               │    │
+│  │  • Each agent calls specific tools                          │    │
+│  │  • ⚠️ Does NOT do validation - only orchestration           │    │
+│  └────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  │ HTTP POST (agents → tools → Render)
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 3: COMPUTATION LAYER                                         │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  Render Web Service (FastAPI)                              │    │
+│  │  expense-tools.onrender.com                                │    │
+│  │                                                              │    │
+│  │  9 Mission-Critical Endpoints:                              │    │
+│  │  1. /fetch-odoo-expense     - Fetch expense data           │    │
+│  │  2. /odoo-ocr               - Extract via Odoo OCR         │    │
+│  │  3. /validate-ocr           - ⚠️ Amount validation          │    │
+│  │  4. /calculate-total        - ⚠️ Pure arithmetic            │    │
+│  │  5. /enrich-category        - Policy-driven enrichment     │    │
+│  │  6. /fetch-policies         - Fetch from Confluence        │    │
+│  │  7. /validate-policy        - ⚠️ Hard-coded rule engine    │    │
+│  │  8. /format-report          - Template formatting          │    │
+│  │  9. /post-odoo-comment      - Post to Zoho/Odoo            │    │
+│  │                                                              │    │
+│  │  ⚠️ = Zero AI, deterministic logic only                     │    │
+│  └────────────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────────────┘
+                                  │
+                                  │ API calls to external systems
+                                  ▼
+┌─────────────────────────────────────────────────────────────────────┐
+│  LAYER 4: EXTERNAL INTEGRATIONS                                     │
+│  ┌──────────────────┐  ┌──────────────────┐                        │
+│  │  Confluence      │  │  Zoho/Odoo       │                        │
+│  │  Knowledge Base  │  │  APIs            │                        │
+│  │  (THG Policies)  │  │                  │                        │
+│  └──────────────────┘  └──────────────────┘                        │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Role of Each Layer
+
+**Layer 1 - Zoho/Odoo (Source System)**
+- **What it does**: Stores expense requests, runs built-in OCR on uploaded invoices, triggers workflow
+- **What it does NOT do**: Amount validation, policy checking
+- **Interaction**: Sends webhook to AgenticGenie (Phase 2) or manual trigger (Phase 1), receives final comment
+
+**Layer 2 - AgenticGenie Platform (Orchestration)**
+- **What it does**: 
+  - Receives trigger with expense_request_id
+  - Calls 4 specialized agents in workflow order
+  - Agents call tools based on their prompts
+  - GPT-4o interprets workflow and decides tool call order
+- **What it does NOT do**: 
+  - ANY validation logic
+  - ANY calculations
+  - ANY policy checking
+- **Why GPT-4o here is safe**: Only used for orchestration decisions (which tool to call next), not for data validation
+- **Interaction**: Agents call tools → tools hit Render endpoints
+
+**Layer 3 - Render/Lambda (Computation)**
+- **What it does**:
+  - Executes ALL hard-coded validation logic (deterministic Python)
+  - Performs all calculations (pure arithmetic)
+  - Runs policy rule engines (if-else logic with dynamic policy data from Confluence)
+  - Makes integration API calls (Odoo, Confluence)
+  - Returns structured JSON responses
+- **What it does NOT do**: 
+  - Any orchestration (doesn't know about workflow)
+  - Any decision-making about what to do next
+- **Why no AI here**: These are pure computation endpoints with zero AI dependency
+- **Interaction**: Receives HTTP requests from AgenticGenie tools, calls external APIs, returns results
+
+**Layer 4 - External Integrations**
+- **What they do**: Provide data (OCR results from Odoo, policies from Confluence, expense data)
+- **Interaction**: Called by Render endpoints
+
+### Why This Separation Works
+
+1. **AgenticGenie does what it's good at**: Workflow orchestration with GPT-4o
+2. **Render does what's reliable**: Hard-coded deterministic logic
+3. **Clear separation of concerns**: Orchestration ≠ Computation
+4. **Migration-friendly**: Change Layer 3 (Render→Lambda) without touching Layer 2 (AgenticGenie)
+5. **Testable**: Can test Render endpoints directly without AgenticGenie
+
+---
+
+## CRITICAL ARCHITECTURE UPDATE: SINGLE OCR APPROACH
+
+### ⚠️ Important Change from Original Design
+
+**Original Plan (Discarded):**
+- Dual OCR: AWS Textract + Odoo OCR
+- Cross-validate both OCR outputs for consensus
+- Flag discrepancies between OCR engines
+
+**Current Implementation (Production):**
+- **Single OCR:** Odoo built-in OCR only
+- **Why:** Textract was producing inconsistent results and added complexity
+- **Impact:** Simpler validation logic, faster processing, lower cost
+
+### OCR Validation Logic (Updated)
+
+**With Single OCR:**
+```python
+# Validation logic - endpoints/OCRValidator.py
+
+def validate_ocr(odoo_ocr_output, employee_claim, invoice_id, currency):
+    """
+    Validate Odoo OCR extracted amount against employee's claimed amount
+    
+    Risk Levels (based on discrepancy size):
+    - MATCH: Amount matches perfectly (< 0.01 difference)
+    - LOW: Small discrepancy (0.01 - 5.00)
+    - MEDIUM: Moderate discrepancy (5.01 - 50.00)
+    - HIGH: Large discrepancy (50.01+)
+    - CRITICAL: Very large discrepancy (100.00+) or OCR extraction failed
+    """
+    
+    odoo_amount = odoo_ocr_output.get('total_amount')
+    
+    # Handle OCR failure
+    if odoo_amount is None:
+        return {
+            "invoice_id": invoice_id,
+            "odoo_amount": None,
+            "verified_amount": None,
+            "employee_reported_amount": employee_claim,
+            "amount_matched": False,
+            "risk_level": "CRITICAL",
+            "error": "Odoo OCR failed to extract amount - manual review required"
+        }
+    
+    # Compare amounts (deterministic)
+    if abs(odoo_amount - employee_claim) < 0.01:
+        return {
+            "invoice_id": invoice_id,
+            "odoo_amount": odoo_amount,
+            "verified_amount": odoo_amount,
+            "employee_reported_amount": employee_claim,
+            "amount_matched": True,
+            "discrepancy_amount": 0.0,
+            "risk_level": "LOW",
+            "currency": currency
+        }
+    else:
+        discrepancy = abs(odoo_amount - employee_claim)
+        
+        # Risk assessment (hard-coded thresholds)
+        if discrepancy > 100:
+            risk = "CRITICAL"
+        elif discrepancy > 50:
+            "HIGH"
+        elif discrepancy > 5:
+            risk = "MEDIUM"
+        else:
+            risk = "LOW"
+        
+        return {
+            "invoice_id": invoice_id,
+            "odoo_amount": odoo_amount,
+            "verified_amount": odoo_amount,
+            "employee_reported_amount": employee_claim,
+            "amount_matched": False,
+            "discrepancy_amount": round(discrepancy, 2),
+            "discrepancy_message": f"Value in invoice as per AG is {odoo_amount:.2f}, not {employee_claim:.2f} as reported",
+            "risk_level": risk,
+            "currency": currency
+        }
+```
+
+**Key Changes from Dual OCR:**
+- ❌ No `ocr_consensus` field (only one OCR source)
+- ❌ No `textract_amount` field
+- ❌ No OCR mismatch detection
+- ✅ Simpler risk levels based only on discrepancy size
+- ✅ Single source of truth: Odoo OCR
+
+---
+
+## ⚠️ CRITICAL ARCHITECTURAL DECISION: POLICY-DRIVEN CATEGORY ENRICHMENT
+
+### The Problem We Discovered
+
+**Original Flawed Approach (Hard-coded categories):**
+
+```python
+# ❌ WRONG - Hard-coded in Python
+if 18 <= hour <= 22:
+    return "Dinner"
+    
+if "hotel" in vendor:
+    return "Accommodation"
+```
+
+**Why This Fails:**
+1. Company A uses "Meals", Company B uses "Food & Beverage" - code breaks
+2. Policy changes quarterly (e.g., max meal amount 50 CHF → 75 CHF) - requires code deployment
+3. Finance teams cannot update rules - always needs developer
+4. Not scalable to multiple companies
+
+### ✅ Solution: Confluence-Driven Policy Rules
+
+**Decision Made:** All categories, rules, and limits stored in Confluence (THG Policies space), fetched dynamically at runtime.
+
+**Status:** ✅ **LIVE IN PRODUCTION** - Confluence integration complete
+
+### Confluence Knowledge Base Structure
+
+**Space:** THG (Hedera Hashgraph)  
+**Base Page:** "THG Policies"
+
+**Policy Pages:**
+```
+THG Policies/
+├── Policy API Index - Machine Readable  (main index table)
+├── Travel and Expense Policy/
+│   ├── Meals Policy
+│   ├── Accommodation Policy
+│   ├── Travel Policy
+│   ├── Parking Policy
+│   └── Client Entertainment Policy
+```
+
+**Policy API Index Structure:**
+
+| Column | Description | Example |
+|--------|-------------|---------|
+| Category | Category name | "Meals" |
+| Aliases | Alternative names (comma-separated) | "Food, Dining, Food & Beverage" |
+| Max Amount | Maximum allowed amount | 50.0 |
+| Currency | Currency code | "CHF" |
+| Receipt Required | Yes/No | "Yes" |
+| Attendees Required | Yes/No (for client entertainment) | "No" |
+| Max Age Days | Maximum invoice age | 90 |
+
+**Individual Policy Pages (e.g., "Meals Policy"):**
+
+Contains:
+- **Aliases:** Alternative category names
+- **Vendor Keywords:** List of vendor types (restaurants, cafes, bistros)
+- **Time-Based Rules:** Table with time ranges and subcategories
+
+Example time-based rules table:
+| Time Range | Subcategory |
+|------------|-------------|
+| 07:00 - 10:00 | Breakfast |
+| 12:00 - 15:00 | Lunch |
+| 18:00 - 22:00 | Dinner |
+
+- **Validation Logic:** JSON code block with detailed rules
+
+```json
+{
+  "max_amount": 50.0,
+  "currency": "CHF",
+  "requires_receipt": true,
+  "requires_attendees": false,
+  "max_age_days": 90
+}
+```
+
+### How Policies Are Fetched
+
+**Implementation:** `endpoints/policyStore.py` + `utils/confluence_client.py`
+
+```python
+# Confluence client fetches policies at runtime
+
+from utils.confluence_client import get_confluence_client
+
+def get_policy(company_id: str) -> PolicyData:
+    """
+    Fetch policy from Confluence (cached 24hrs)
+    
+    ✅ LIVE: Calls Confluence API
+    ❌ NOT using mock data
+    """
+    # Check cache first (24hr TTL)
+    if cached:
+        return cached_policy
+    
+    # Fetch from Confluence
+    client = get_confluence_client()
+    
+    # Step 1: Get policy index table
+    index_data = client.get_policy_index()  # Parses HTML table
+    
+    # Step 2: For each category, fetch detailed page
+    categories = []
+    for policy_row in index_data:
+        category_name = policy_row['Category']
+        details = client.get_category_details(category_name)  # Fetches individual page
+        
+        # Build category definition
+        categories.append(CategoryDefinition(
+            name=category_name,
+            aliases=policy_row['Aliases'].split(','),
+            enrichment_rules=details['enrichment_rules'],
+            validation_rules=details['validation_rules']
+        ))
+    
+    # Step 3: Cache and return
+    policy = PolicyData(
+        company_id=company_id,
+        categories=categories,
+        default_category="Other"
+    )
+    cache_policy(policy, 24_hours)
+    return policy
+```
+
+**Caching Strategy:**
+- **Cache Duration:** 24 hours
+- **Cache Key:** `policy_{company_id}`
+- **Storage:** In-memory Python dict (Phase 1) → DynamoDB (Phase 2)
+- **Invalidation:** Manual via `/invalidate-policy-cache` endpoint or auto-expires after 24hrs
+
+### Architecture Benefits
+
+✅ **No hard-coded categories** - Everything from Confluence  
+✅ **Finance team control** - Update Confluence pages, no code deployment  
+✅ **Real-time updates** - Policy changes live after cache expires (24hrs)  
+✅ **Multi-company ready** - One Confluence space per company  
+✅ **Deterministic logic** - Still hard-coded if-else, data is dynamic  
+✅ **Audit trail** - Confluence tracks all policy changes  
+✅ **Cacheable** - Avoids excessive API calls  
+
+---
+
+## DEVELOPMENT APPROACH (TWO PHASES)
+
+### Phase 1: DEVELOPMENT (Current - Render + Manual Trigger)
+
+**Why Manual Trigger:**
+- We don't have AgenticGenie API key for webhook integration yet
+- Manual trigger lets us test entire workflow end-to-end
+- Can test with sample expense data without needing Zoho/Odoo webhook setup
+
+**Infrastructure:**
+- **Render web service** (FastAPI)
+- **9 HTTP endpoints** hosting validation logic
+- **AWS Textract**: NOT USED (removed)
+- **Odoo OCR**: Primary OCR source
+- **Confluence API**: Live policy fetching (cached 24hrs)
+- **File storage**: Temporary (Render disk)
+- **Caching**: In-memory Python dict
+- **Cost**: ~$7-15/month Render + Confluence API (free tier)
+
+**How to Trigger:**
+1. Go to AgenticGenie Playbooks dashboard
+2. Find "ExpenseVerificationPlaybook"
+3. Click "Trigger" button
+4. Paste JSON: `{"expense_request_id": "EXP-12345"}`
+5. Click "Execute"
+6. Monitor in Executions dashboard
+
+**Benefits:**
+- Faster iteration (instant deploys)
+- Easier debugging (console logs)
+- Simple HTTP testing (curl/Postman)
+- No AWS costs during development
+
+### Phase 2: PRODUCTION (Future - Lambda + Webhook)
+
+**When:** After development complete and tested, AND we have AgenticGenie API key
+
+**What Changes:**
+
+1. **Render endpoints → AWS Lambda functions**
+   - Copy exact same FastAPI/Python validation logic
+   - Deploy via AWS SAM or Terraform
+
+2. **File storage → S3** with 24-hour lifecycle policy
+
+3. **Caching → DynamoDB** with TTL
+
+4. **API Gateway** for endpoint management
+
+5. **Update AgenticGenie tool configurations**
+   - Change API Endpoint from `https://expense-tools.onrender.com/validate-ocr`
+   - To `https://api.yourcompany.com/validate-ocr` (API Gateway URL)
+   - Input/output schemas remain identical
+
+6. **Enable Webhook Trigger**
+   - Configure Zoho/Odoo webhook to POST to AgenticGenie playbook endpoint
+   - URL: `https://demo.agenticgenie.click/api/webhook/playbook/{PLAYBOOK_ID}`
+   - Authentication: AgenticGenie API key (when available)
+   - Payload: `{"expense_request_id": "{EXPENSE_ID}"}`
+   - **Now fully automated**: Employee submits → webhook triggers → playbook runs → comment posted
+
+**What Stays the Same:**
+- AgenticGenie Playbook workflow (unchanged)
+- AgenticGenie Agents (unchanged)
+- Tool input/output schemas (unchanged)
+- Validation logic code (just copy-paste to Lambda)
+- Confluence integration (unchanged)
+- Odoo OCR integration (unchanged)
+
+**Migration effort**: ~1-2 days (mainly infrastructure setup)
+
+**Cost**: ~$50-150/month (Lambda pay-per-use + API calls)
+
+---
+
+## DETAILED WORKFLOW
+
+### Complete Flow (Step-by-Step)
+
+**Trigger:** Employee submits expense request in Zoho/Odoo with multiple invoices
+
+```
+STEP 1: FETCH EXPENSE DATA
+Agent: DataFetcherAgent
+Tool: FetchExpenseRequest
+Endpoint: POST /fetch-odoo-expense
+
+Input: {"expense_sheet_id": 542}
+Action: Calls Zoho/Odoo API to fetch:
+  - Expense sheet metadata (employee, total claimed, currency)
+  - Individual expense lines (one per invoice)
+  - Attachments (invoice PDFs/images)
+Output: 
+  {
+    "expense_sheet": {
+      "id": 542,
+      "name": "December Travel Expenses",
+      "employee_id": [123, "John Doe"],
+      "total_amount": 452.30,
+      "currency_id": [1, "CHF"]
+    },
+    "expense_lines": [
+      {
+        "id": 1001,
+        "name": "Restaurant meal",
+        "total_amount": 85.50,
+        "date": "2024-12-15",
+        "attachment_ids": [5001, 5002]
+      },
+      // ... more lines
+    ]
+  }
+
+---
+
+STEP 2: OCR EXTRACTION (For each invoice)
+Agent: DataFetcherAgent
+Tool: OdooOCR
+Endpoint: POST /odoo-ocr
+
+Input: {"expense_line_id": 1001, ...odoo_credentials}
+Action: 
+  - Calls Odoo API to read expense line
+  - Odoo's built-in OCR has already processed the attachment
+  - Extracts: vendor name, date, total amount
+Output:
+  {
+    "invoice_id": "odoo-1001",
+    "vendor": "Restaurant Le Jardin",
+    "date": "2024-12-15",
+    "total_amount": 85.50,
+    "currency": "CHF",
+    "source": "odoo_ocr"
+  }
+
+NOTE: This happens for ALL invoices in parallel or sequence
+
+---
+
+STEP 3: VALIDATE OCR AMOUNTS (For each invoice)
+Agent: ExpenseValidatorAgent
+Tool: OCRValidator
+Endpoint: POST /validate-ocr
+
+Input:
+  {
+    "odoo_output": {
+      "total_amount": 85.50,
+      "vendor": "Restaurant Le Jardin"
+    },
+    "employee_claim": 85.50,
+    "invoice_id": "INV-001",
+    "currency": "CHF"
+  }
+
+Action: Hard-coded Python comparison (ZERO AI)
+  - Compare odoo_output.total_amount vs employee_claim
+  - If match (< 0.01 difference): amount_matched = true
+  - If mismatch: Calculate discrepancy, assign risk level
+
+Output:
+  {
+    "invoice_id": "INV-001",
+    "odoo_amount": 85.50,
+    "verified_amount": 85.50,
+    "employee_reported_amount": 85.50,
+    "amount_matched": true,
+    "discrepancy_amount": 0.0,
+    "risk_level": "LOW",
+    "currency": "CHF"
+  }
+
+Example with mismatch:
+  Input: employee_claim = 83.90 (but OCR found 85.50)
+  Output:
+    {
+      "amount_matched": false,
+      "discrepancy_amount": 1.60,
+      "discrepancy_message": "Value in invoice as per AG is 85.50, not 83.90 as reported",
+      "risk_level": "LOW"
+    }
+
+---
+
+STEP 4: CALCULATE AND VERIFY TOTAL
+Agent: ExpenseValidatorAgent
+Tool: AmountCalculator
+Endpoint: POST /calculate-total
+
+Input:
+  {
+    "individual_validations": [
+      {"verified_amount": 85.50, "invoice_id": "INV-001"},
+      {"verified_amount": 320.80, "invoice_id": "INV-002"},
+      {"verified_amount": 46.00, "invoice_id": "INV-003"}
+    ],
+    "employee_reported_total": 452.30,
+    "currency": "CHF"
+  }
+
+Action: Pure arithmetic (ZERO AI)
+  calculated_total = sum(all verified_amounts)
+  = 85.50 + 320.80 + 46.00
+  = 452.30
+  
+  Compare: calculated_total vs employee_reported_total
+  If match: matched = true
+  If not: Calculate discrepancy
+
+Output:
+  {
+    "calculated_total": 452.30,
+    "employee_reported_total": 452.30,
+    "matched": true,
+    "discrepancy_amount": 0.0,
+    "currency": "CHF"
+  }
+
+Example with mismatch:
+  If employee_reported_total = 451.30:
+  {
+    "matched": false,
+    "discrepancy_amount": 1.00,
+    "discrepancy_message": "Total is incorrect by 1.00 CHF, should be 452.30 CHF"
+  }
+
+---
+
+STEP 5: ENRICH MISSING CATEGORIES (For each invoice if needed)
+Agent: PolicyComplianceAgent
+Tool: CategoryEnricher
+Endpoint: POST /enrich-category
+
+Input:
+  {
+    "vendor": "Restaurant Le Jardin",
+    "date": "2024-12-15",
+    "time": "19:30",
+    "existing_category": null,
+    "invoice_id": "INV-001",
+    "company_id": "hashgraph_inc"
+  }
+
+Action: Policy-driven enrichment (deterministic logic, dynamic data)
+  1. Fetch policy from Confluence (cached 24hrs)
+  2. Try time-based rules first:
+     - Check if 19:30 matches any time_based rules in policy
+     - 18:00-22:00 → "Dinner" subcategory → "Meals" category
+  3. If no time match, try vendor keywords:
+     - Check if "restaurant" in vendor name matches policy vendor_keywords
+     - "restaurant" → "Meals" category
+  4. Fallback: Return policy.default_category ("Other")
+
+Output:
+  {
+    "invoice_id": "INV-001",
+    "suggested_category": "Meals",
+    "confidence": 0.95,
+    "rule_matched": "TIME_BASED_DINNER",
+    "fallback_used": false
+  }
+
+NOTE: Categories, time ranges, vendor keywords ALL come from Confluence
+      NO hard-coded categories in the code
+
+---
+
+STEP 6: FETCH COMPANY POLICIES
+Agent: PolicyComplianceAgent
+Tool: ConfluencePolicyFetcher
+Endpoint: POST /fetch-policies
+
+Input:
+  {
+    "company_id": "hashgraph_inc",
+    "categories": ["Meals", "Accommodation", "Travel"]  // Optional filter
+  }
+
+Action: Fetch from Confluence (if not cached)
+  1. Check in-memory cache (24hr TTL)
+  2. If cache miss:
+     - Call Confluence API
+     - Get "Policy API Index - Machine Readable" page
+     - Parse HTML table
+     - For each category, fetch detailed policy page
+     - Extract enrichment rules, validation rules
+  3. Cache policy data
+  4. Return PolicyData object
+
+Output:
+  {
+    "company_id": "hashgraph_inc",
+    "effective_date": "2025-01-01",
+    "categories": [
+      {
+        "name": "Meals",
+        "aliases": ["Food", "Dining", "Food & Beverage"],
+        "enrichment_rules": {
+          "time_based": [
+            {"start_hour": 7, "end_hour": 10, "subcategory": "Breakfast"},
+            {"start_hour": 12, "end_hour": 15, "subcategory": "Lunch"},
+            {"start_hour": 18, "end_hour": 22, "subcategory": "Dinner"}
+          ],
+          "vendor_keywords": ["restaurant", "cafe", "bistro", "diner"]
+        },
+        "validation_rules": {
+          "max_amount": 50.0,
+          "currency": "CHF",
+          "requires_receipt": true,
+          "max_age_days": 90
+        }
+      },
+      {
+        "name": "Accommodation",
+        "aliases": ["Hotel", "Lodging"],
+        "enrichment_rules": {
+          "vendor_keywords": ["hotel", "inn", "resort", "motel"]
+        },
+        "validation_rules": {
+          "max_amount": 350.0,
+          "currency": "CHF",
+          "requires_receipt": true,
+          "requires_attendees": false
+        }
+      }
+      // ... more categories
+    ],
+    "default_category": "Other"
+  }
+
+---
+
+STEP 7: VALIDATE POLICY COMPLIANCE (For each invoice)
+Agent: PolicyComplianceAgent
+Tool: PolicyValidator
+Endpoint: POST /validate-policy
+
+Input:
+  {
+    "category": "Meals",
+    "amount": 85.50,
+    "currency": "CHF",
+    "vendor": "Restaurant Le Jardin",
+    "has_receipt": true,
+    "invoice_age_days": 10,
+    "company_id": "hashgraph_inc"
+  }
+
+Action: Hard-coded rule engine with dynamic rules from policy
+  1. Fetch policy (cached)
+  2. Find category definition for "Meals"
+  3. Apply validation rules (hard-coded if-else logic):
+  
+  violations = []
+  
+  # Rule 1: Check max amount
+  if amount > validation_rules.max_amount:
+      violations.append({
+          "rule": "EXCEEDS_MAX_AMOUNT",
+          "message": f"Our policy states maximum capping on Meals is 50.0 CHF, and this is for CHF 85.50",
+          "severity": "ERROR"
+      })
+  
+  # Rule 2: Check receipt requirement
+  if validation_rules.requires_receipt and not has_receipt:
+      violations.append({
+          "rule": "MISSING_RECEIPT",
+          "message": "Receipt is required for Meals expenses",
+          "severity": "ERROR"
+      })
+  
+  # Rule 3: Check invoice age
+  if invoice_age_days > validation_rules.max_age_days:
+      violations.append({
+          "rule": "INVOICE_TOO_OLD",
+          "message": f"Invoice is {invoice_age_days} days old, exceeds 90 day limit",
+          "severity": "WARNING"
+      })
+
+Output (if compliant):
+  {
+    "compliant": true,
+    "violations": [],
+    "category_found": true,
+    "max_amount": 50.0
+  }
+
+Output (if violations):
+  {
+    "compliant": false,
+    "violations": [
+      {
+        "rule": "EXCEEDS_MAX_AMOUNT",
+        "message": "Our policy states maximum capping on Meals is 50.0 CHF, and this is for CHF 85.50",
+        "severity": "ERROR"
+      }
+    ],
+    "category_found": true,
+    "max_amount": 50.0
+  }
+
+---
+
+STEP 8: FORMAT VERIFICATION REPORT
+Agent: ReportGeneratorAgent
+Tool: ReportFormatter
+Endpoint: POST /format-report
+
+Input:
+  {
+    "expense_sheet_id": 542,
+    "expense_sheet_name": "December Travel Expenses",
+    "employee_name": "John Doe",
+    "dual_ocr_validations": [
+      {
+        "invoice_id": "INV-001",
+        "amount_matched": true,
+        "risk_level": "LOW"
+      },
+      {
+        "invoice_id": "INV-002",
+        "amount_matched": false,
+        "discrepancy_message": "Value in invoice as per AG is 320.80, not 318.00 as reported",
+        "risk_level": "LOW"
+      }
+    ],
+    "total_validation": {
+      "matched": false,
+      "discrepancy_message": "Total is incorrect by 2.80 CHF, should be 452.30 CHF"
+    },
+    "categories": ["Meals", "Accommodation", "Travel"],
+    "policy_validations": [
+      {"compliant": true, "violations": []},
+      {
+        "compliant": false,
+        "violations": [{
+          "message": "Our policy states maximum capping on Accommodation is 350.0 CHF, and this is for CHF 392.40"
+        }]
+      }
+    ]
+  }
+
+Action: Template-based formatting (NO AI)
+  - Build structured HTML comment
+  - Section 1: OCR Verification results
+  - Section 2: Total Verification
+  - Section 3: Policy Compliance
+  - Section 4: Overall Summary
+
+Output:
+  {
+    "formatted_comment": "...",  // Plain text version
+    "html_comment": "
+      <p><strong>Automated Verification Report</strong></p>
+      <p>Hi Manager,</p>
+      <p>Please find below findings for expense: <strong>December Travel Expenses</strong></p>
+      <p>Employee: <strong>John Doe</strong></p>
+      
+      <p><strong>OCR Verification:</strong></p>
+      <ul>
+        <li>Invoice 1: No issue found</li>
+        <li>Invoice 2: Value in invoice as per AG is 320.80, not 318.00 as reported</li>
+      </ul>
+      
+      <p><strong>Total Verification:</strong></p>
+      <p>Total is incorrect by 2.80 CHF, should be 452.30 CHF</p>
+      
+      <p><strong>Policy Compliance:</strong></p>
+      <ul>
+        <li><strong>Invoice 1 [Meals]:</strong> Compliant to policy (Max: 50.0 CHF)</li>
+        <li><strong>Invoice 2 [Accommodation]:</strong> 1 violation(s)
+          <ul>
+            <li>ERROR: Our policy states maximum capping on Accommodation is 350.0 CHF, and this is for CHF 392.40</li>
+          </ul>
+        </li>
+      </ul>
+      
+      <p><strong>Overall Summary:</strong></p>
+      <p>Issues found: 1 invoice(s) with amount mismatch, total amount incorrect, 1 invoice(s) with policy violations</p>
+    "
+  }
+
+---
+
+STEP 9: POST COMMENT TO ZOHO/ODOO
+Agent: ReportGeneratorAgent
+Tool: ZohoOdooCommenter
+Endpoint: POST /post-odoo-comment
+
+Input:
+  {
+    "expense_sheet_id": 542,
+    "comment_html": "<p><strong>Automated Verification Report</strong></p>...",
+    ...odoo_credentials
+  }
+
+Action:
+  1. Authenticate with Odoo
+  2. Call message_post method on hr.expense.sheet model
+  3. Post HTML comment to expense sheet's chatter
+
+Output:
+  {
+    "success": true,
+    "message_id": 7890
+  }
+
+RESULT: Comment visible in Zoho/Odoo expense sheet for Finance Manager to review
+```
+
+---
+
+## AGENTIC GENIE CONFIGURATION
+
+### 9 Tools (Configuration Wrappers - NO CODE)
+
+Each tool is a **configuration object** in AgenticGenie platform with:
+- API Endpoint URL (points to Render)
+- Input Parameters (typed)
+- Output Schema
+- Tool Annotation (usage instructions for agents)
+
+AgenticGenie automatically sends HTTP POST to the endpoint when tool is called.
+
+---
+
+#### Tool 1: FetchExpenseRequest
+
+**API Endpoint:** `https://expense-tools.onrender.com/fetch-odoo-expense`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: expense_sheet_id
+  Type: integer
+  Description: Odoo expense sheet ID
+
+Parameter 2-5: Odoo credentials (url, db, username, password)
+```
+
+**Output Type:** JSON Object
+
+**Tool Annotation:**
+```
+Fetches expense sheet data from Odoo including all expense lines and attachments.
+Always call this FIRST in the workflow to get expense data.
+```
+
+---
+
+#### Tool 2: OdooOCR
+
+**API Endpoint:** `https://expense-tools.onrender.com/odoo-ocr`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: expense_line_id
+  Type: integer
+  Description: Odoo expense line ID (from FetchExpenseRequest output)
+
+Parameter 2-5: Odoo credentials
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "invoice_id": "odoo-1001",
+  "vendor": "Restaurant Le Jardin",
+  "date": "2024-12-15",
+  "total_amount": 85.50,
+  "currency": "CHF",
+  "source": "odoo_ocr"
+}
+```
+
+**Tool Annotation:**
+```
+Extracts invoice data using Odoo's built-in OCR.
+Call this for EACH invoice attachment in the expense request.
+The OCR has already been performed by Odoo when the invoice was uploaded.
+This tool simply retrieves the extracted data.
+```
+
+---
+
+#### Tool 3: OCRValidator
+
+**API Endpoint:** `https://expense-tools.onrender.com/validate-ocr`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: odoo_output
+  Type: JSON Object
+  Description: OCR result from OdooOCR tool
+
+Parameter 2:
+  Name: employee_claim
+  Type: number
+  Description: Amount claimed by employee for this invoice
+
+Parameter 3:
+  Name: invoice_id
+  Type: string
+
+Parameter 4:
+  Name: currency
+  Type: string
+  Default: "CHF"
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "invoice_id": "INV-002",
+  "odoo_amount": 85.50,
+  "verified_amount": 85.50,
+  "employee_reported_amount": 83.90,
+  "amount_matched": false,
+  "discrepancy_amount": 1.60,
+  "discrepancy_message": "Value in invoice as per AG is 85.50, not 83.90 as reported",
+  "risk_level": "LOW",
+  "currency": "CHF"
+}
+```
+
+**Tool Annotation:**
+```
+⚠️ CRITICAL: Validates Odoo OCR extracted amount against employee's claimed amount.
+
+This tool uses HARD-CODED validation logic (ZERO AI).
+Always call this for EACH invoice after OCR extraction.
+NEVER validate amounts yourself - always use this tool.
+Use the exact discrepancy_message returned - DO NOT modify it.
+
+Risk Levels:
+- LOW: Amount matches or small discrepancy (< 5 CHF)
+- MEDIUM: Moderate discrepancy (5-50 CHF)
+- HIGH: Large discrepancy (50-100 CHF)
+- CRITICAL: Very large discrepancy (> 100 CHF) or OCR failed
+```
+
+---
+
+#### Tool 4: AmountCalculator
+
+**API Endpoint:** `https://expense-tools.onrender.com/calculate-total`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: individual_validations
+  Type: list of JSON Objects
+  Description: All OCRValidator outputs for this expense
+
+Parameter 2:
+  Name: employee_reported_total
+  Type: number
+  Description: Total amount claimed by employee
+
+Parameter 3:
+  Name: currency
+  Type: string
+  Default: "CHF"
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "calculated_total": 452.30,
+  "employee_reported_total": 451.30,
+  "matched": false,
+  "discrepancy_amount": 1.00,
+  "discrepancy_message": "Total is incorrect by 1.00 CHF, should be 452.30 CHF",
+  "currency": "CHF"
+}
+```
+
+**Tool Annotation:**
+```
+⚠️ CRITICAL: Calculates total and validates against employee's claimed total.
+
+This tool performs PURE ARITHMETIC (ZERO AI).
+NEVER calculate totals yourself - always call this tool.
+It sums all verified_amounts and compares with employee's reported total.
+Use the exact discrepancy_message returned - DO NOT modify it.
+```
+
+---
+
+#### Tool 5: CategoryEnricher
+
+**API Endpoint:** `https://expense-tools.onrender.com/enrich-category`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: vendor
+  Type: string
+  Description: Vendor name from Odoo OCR (optional)
+
+Parameter 2:
+  Name: time
+  Type: string
+  Description: Time from Odoo OCR (optional, format: "HH:MM")
+
+Parameter 3:
+  Name: date
+  Type: string
+  Description: Date from invoice (optional)
+
+Parameter 4:
+  Name: existing_category
+  Type: string
+  Description: Category provided by employee (optional)
+
+Parameter 5:
+  Name: invoice_id
+  Type: string
+
+Parameter 6:
+  Name: company_id
+  Type: string
+  Default: "hashgraph_inc"
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "invoice_id": "INV-001",
+  "suggested_category": "Meals",
+  "confidence": 0.95,
+  "rule_matched": "TIME_BASED_DINNER",
+  "fallback_used": false
+}
+```
+
+**Tool Annotation:**
+```
+Enriches missing invoice categories using policy-driven rules from Confluence.
+
+Categories, time ranges, and vendor keywords are ALL fetched from Confluence.
+NO hard-coded categories - everything is dynamic.
+
+Matching order:
+1. Validate existing_category against policy (if provided)
+2. Apply time-based rules (e.g., 19:30 → Dinner → Meals)
+3. Apply vendor keyword rules (e.g., "restaurant" → Meals)
+4. Fallback to policy.default_category
+
+Call this for invoices where category is missing or needs validation.
+```
+
+---
+
+#### Tool 6: ConfluencePolicyFetcher
+
+**API Endpoint:** `https://expense-tools.onrender.com/fetch-policies`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: company_id
+  Type: string
+  Default: "hashgraph_inc"
+
+Parameter 2:
+  Name: categories
+  Type: list of strings
+  Description: Optional filter for specific categories
+  Optional: true
+```
+
+**Output Type:** JSON Object (PolicyData)
+
+**Tool Annotation:**
+```
+Fetches company expense policies from Confluence (cached 24 hours).
+
+✅ LIVE: Calls Confluence API (THG Policies space)
+❌ NOT using mock data
+
+Returns all categories with:
+- Enrichment rules (time-based, vendor keywords)
+- Validation rules (max amounts, receipt requirements)
+
+Cache: 24 hour TTL
+If cache hit, returns instantly without calling Confluence.
+```
+
+---
+
+#### Tool 7: PolicyValidator
+
+**API Endpoint:** `https://expense-tools.onrender.com/validate-policy`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: category
+  Type: string
+  Description: Expense category (from CategoryEnricher)
+
+Parameter 2:
+  Name: amount
+  Type: number
+  Description: Invoice amount (from OCRValidator verified_amount)
+
+Parameter 3:
+  Name: currency
+  Type: string
+  Default: "CHF"
+
+Parameter 4:
+  Name: vendor
+  Type: string
+  Optional: true
+
+Parameter 5:
+  Name: has_receipt
+  Type: boolean
+  Default: true
+
+Parameter 6:
+  Name: invoice_age_days
+  Type: integer
+  Optional: true
+
+Parameter 7:
+  Name: company_id
+  Type: string
+  Default: "hashgraph_inc"
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "compliant": false,
+  "violations": [
+    {
+      "rule": "EXCEEDS_MAX_AMOUNT",
+      "message": "Our policy states maximum capping on Accommodation is 350.0 CHF, and this is for CHF 392.40",
+      "severity": "ERROR"
+    }
+  ],
+  "category_found": true,
+  "max_amount": 350.0
+}
+```
+
+**Tool Annotation:**
+```
+⚠️ CRITICAL: Validates expense against company policy rules from Confluence.
+
+This tool uses HARD-CODED rule engine (ZERO AI) but rules are dynamic from policy.
+NEVER evaluate policy compliance yourself - always call this tool.
+
+Rules checked (all from Confluence policy):
+1. Max amount limit
+2. Receipt requirement
+3. Invoice age limit
+4. Approved vendors (if policy defines them)
+
+Use the exact violation messages returned - DO NOT modify them.
+```
+
+---
+
+#### Tool 8: ReportFormatter
+
+**API Endpoint:** `https://expense-tools.onrender.com/format-report`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: expense_sheet_id
+  Type: integer
+
+Parameter 2:
+  Name: expense_sheet_name
+  Type: string
+
+Parameter 3:
+  Name: employee_name
+  Type: string
+
+Parameter 4:
+  Name: dual_ocr_validations
+  Type: list of JSON Objects
+  Description: All OCRValidator outputs
+
+Parameter 5:
+  Name: total_validation
+  Type: JSON Object
+  Description: AmountCalculator output
+
+Parameter 6:
+  Name: categories
+  Type: list of strings
+  Description: Categories for each invoice
+
+Parameter 7:
+  Name: policy_validations
+  Type: list of JSON Objects
+  Description: All PolicyValidator outputs
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "formatted_comment": "Automated Verification Report\n\nHi Manager...",
+  "html_comment": "<p><strong>Automated Verification Report</strong></p>..."
+}
+```
+
+**Tool Annotation:**
+```
+Formats verification results into structured comment (plain text + HTML).
+
+Uses template-based formatting (NO AI).
+Combines all validation results into standardized report format:
+- OCR Verification section
+- Total Verification section  
+- Policy Compliance section
+- Overall Summary
+
+The exact message format is required by the PRD.
+DO NOT modify the formatted output.
+```
+
+---
+
+#### Tool 9: ZohoOdooCommenter
+
+**API Endpoint:** `https://expense-tools.onrender.com/post-odoo-comment`
+
+**Input Parameters:**
+```
+Parameter 1:
+  Name: expense_sheet_id
+  Type: integer
+
+Parameter 2:
+  Name: comment_html
+  Type: string
+  Description: HTML comment from ReportFormatter
+
+Parameter 3-6: Odoo credentials
+```
+
+**Output Type:** JSON Object
+
+**Example Output:**
+```json
+{
+  "success": true,
+  "message_id": 7890
+}
+```
+
+**Tool Annotation:**
+```
+Posts verification comment to Odoo expense sheet chatter.
+
+Call this as the FINAL step in the workflow.
+If posting fails, retry once after 10 seconds.
+The comment will be visible to Finance Manager in Odoo interface.
+```
+
+---
+
+### 4 Agents (Specialized Orchestrators)
+
+Each agent has a specific role and calls specific tools.
+
+---
+
+#### Agent 1: DataFetcherAgent
+
+**Agent Prompt:**
+```
+You are DataFetcherAgent.
+
+Your job: Fetch expense data and extract invoice information using Odoo OCR.
+
+Workflow:
+1. Call FetchExpenseRequest tool with expense_sheet_id
+   - Get expense sheet metadata and expense lines
+   - Store the list of expense_line_ids
+
+2. For EACH expense line:
+   - Call OdooOCR tool with expense_line_id
+   - Store OCR results (vendor, date, time, amount)
+
+3. Return all OCR results to the playbook
+
+CRITICAL RULES:
+- Process ALL expense lines - don't skip any
+- Odoo OCR has already been performed - you're just retrieving the extracted data
+- If OCR extraction fails for an invoice, mark it for manual review but continue with others
+
+Output format:
+Return a list of OCR results, one per invoice.
+```
+
+**Assigned Tools:**
+- FetchExpenseRequest
+- OdooOCR
+
+---
+
+#### Agent 2: ExpenseValidatorAgent
+
+**Agent Prompt:**
+```
+You are ExpenseValidatorAgent.
+
+Your job: Validate invoice amounts using OCRValidator and AmountCalculator tools.
+
+Workflow:
+1. For EACH invoice (from DataFetcherAgent results):
+   - Extract: odoo_ocr_output, employee_claim, invoice_id
+   - Call OCRValidator tool
+   - Store validation result
+
+2. After ALL invoices validated:
+   - Collect all verified_amounts
+   - Call AmountCalculator tool with verified amounts and employee's total
+   - Store total validation result
+
+3. Return validation results to playbook
+
+CRITICAL RULES:
+- NEVER calculate amounts yourself - always call AmountCalculator
+- NEVER validate OCR yourself - always call OCRValidator
+- NEVER modify discrepancy messages from tools - use them exactly as returned
+- Process ALL invoices - don't skip any
+
+Output format:
+Return:
+- individual_validations: List of OCRValidator results
+- total_validation: AmountCalculator result
+```
+
+**Assigned Tools:**
+- OCRValidator
+- AmountCalculator
+
+---
+
+#### Agent 3: PolicyComplianceAgent
+
+**Agent Prompt:**
+```
+You are PolicyComplianceAgent.
+
+Your job: Enrich categories and validate policy compliance.
+
+Workflow:
+1. For invoices with missing categories:
+   - Call CategoryEnricher tool with invoice metadata (vendor, time, date)
+   - Store suggested category
+
+2. Call ConfluencePolicyFetcher tool once:
+   - Get company policies (cached, so this is fast)
+   - Store policy data
+
+3. For EACH invoice:
+   - Call PolicyValidator tool with:
+     * category (from enrichment or employee-provided)
+     * amount (verified_amount from ExpenseValidatorAgent)
+     * other metadata
+   - Store compliance result
+
+4. Return enriched categories and policy validation results
+
+CRITICAL RULES:
+- NEVER evaluate policy compliance yourself - always call PolicyValidator
+- NEVER modify violation messages from tools - use them exactly as returned
+- Always use CategoryEnricher for missing categories - don't guess
+- Process ALL invoices for policy validation
+
+Output format:
+Return:
+- enriched_categories: List of categories (one per invoice)
+- policy_validations: List of PolicyValidator results
+```
+
+**Assigned Tools:**
+- CategoryEnricher
+- ConfluencePolicyFetcher
+- PolicyValidator
+
+---
+
+#### Agent 4: ReportGeneratorAgent
+
+**Agent Prompt:**
+```
+You are ReportGeneratorAgent.
+
+Your job: Format and post verification report.
+
+Workflow:
+1. Receive all results from previous agents:
+   - individual_validations (from ExpenseValidatorAgent)
+   - total_validation (from ExpenseValidatorAgent)
+   - enriched_categories (from PolicyComplianceAgent)
+   - policy_validations (from PolicyComplianceAgent)
+
+2. Call ReportFormatter tool with ALL results
+   - Tool generates structured HTML comment
+
+3. Call ZohoOdooCommenter tool
+   - Post comment to expense sheet
+   - If posting fails, retry once after 10 seconds
+
+4. Return confirmation
+
+CRITICAL RULES:
+- NEVER format the report yourself - always call ReportFormatter
+- The formatted comment contains exact messages - DO NOT modify them
+- If ZohoOdooCommenter fails after retry, report error to user
+
+Output format:
+Return:
+- success: boolean
+- comment_id: integer (if successful)
+- error: string (if failed)
+```
+
+**Assigned Tools:**
+- ReportFormatter
+- ZohoOdooCommenter
+
+---
+
+### Playbook: ExpenseVerificationPlaybook
+
+**Basic Info:**
+```
+Playbook Name: ExpenseVerificationPlaybook
+Product Name: ExpenseReimbursement
+Description: Expense verification workflow using Odoo OCR, policy-driven validation from Confluence, and structured reporting. Minimal AgenticGenie orchestration.
+AI Model: gpt-4o
+```
+
+**Workflow:**
+```
+EXPENSE VERIFICATION WORKFLOW
+
+## INPUT
+The playbook receives: {"expense_request_id": <EXPENSE_SHEET_ID>}
+
+## WORKFLOW STEPS
+
+### STEP 1: DATA COLLECTION
+Agent: DataFetcherAgent
+- Fetches expense sheet data from Odoo
+- Extracts invoice data using Odoo OCR for all invoices
+- Returns: expense_data + list of OCR results
+
+### STEP 2: AMOUNT VALIDATION
+Agent: ExpenseValidatorAgent
+- Validates each invoice amount (OCR vs employee claim)
+- Calculates and validates total amount
+- Returns: individual_validations + total_validation
+
+### STEP 3: POLICY COMPLIANCE
+Agent: PolicyComplianceAgent
+- Enriches missing categories using Confluence policies
+- Validates policy compliance for each invoice
+- Returns: enriched_categories + policy_validations
+
+### STEP 4: REPORT & POST
+Agent: ReportGeneratorAgent
+- Formats verification report from all results
+- Posts comment to Odoo expense sheet
+- Returns: success confirmation
+
+CRITICAL: Each agent completes BEFORE the next agent starts.
+Data flows: Step 1 → Step 2 → Step 3 → Step 4
+```
+
+**Special Instructions:**
+```
+CRITICAL RULES FOR ALL AGENTS:
+
+1. AGENT COORDINATION:
+   - DataFetcherAgent completes BEFORE ExpenseValidatorAgent starts
+   - ExpenseValidatorAgent completes BEFORE PolicyComplianceAgent starts
+   - PolicyComplianceAgent completes BEFORE ReportGeneratorAgent starts
+   - Pass data between agents via playbook context
+
+2. VALIDATION RULES:
+   - ⚠️ NEVER use GPT-4o to validate amounts - ALWAYS call OCRValidator
+   - ⚠️ NEVER use GPT-4o to calculate totals - ALWAYS call AmountCalculator
+   - ⚠️ NEVER use GPT-4o to check policies - ALWAYS call PolicyValidator
+   - ⚠️ NEVER modify exact messages from tools - use as-is
+
+3. ERROR HANDLING:
+   - If Odoo OCR fails for an invoice: Mark "Manual Review Required", continue with others
+   - If ConfluencePolicyFetcher fails: Log error, use cached policies if available
+   - If total discrepancy > 50 CHF: Log as high priority
+   - If ZohoOdooCommenter fails: Retry once (10 sec delay), then escalate
+
+4. DATA VALIDATION:
+   - Before calling any tool, verify required input fields exist
+   - If missing required data, return error immediately
+   - Do not attempt to "guess" or "infer" missing data
+```
+
+**Helper Agents:**
+```
+✓ DataFetcherAgent
+✓ ExpenseValidatorAgent
+✓ PolicyComplianceAgent
+✓ ReportGeneratorAgent
+```
+
+**Config:**
+```
+Chat Type: Workflow Chat
+
+Trigger:
+- Phase 1: Manual trigger from AgenticGenie UI
+- Phase 2: Webhook from Zoho/Odoo
+
+Retry Logic:
+- Retry Attempts: 1
+- Retry Delay: 30 seconds
+- Retry on: Network/timeout errors only
+- Do NOT retry validation tools (they're deterministic)
+
+Notifications:
+✓ Log all executions to dashboard
+- Email: (Phase 2) Notify Finance Manager on high-risk findings
+```
+
+---
+
+## RENDER SERVER IMPLEMENTATION (FastAPI)
+
+### Project Structure
+
+```
+expense-reimbursement-bot/
+├── main.py                          # FastAPI app with all endpoints
+├── requirements.txt                 # Dependencies
+├── config.py                        # Odoo & Confluence credentials
+├── endpoints/
+│   ├── fetchOdooExpense.py         # Fetch from Odoo
+│   ├── odooOCR.py                  # Odoo OCR extraction
+│   ├── OCRValidator.py             # Amount validation
+│   ├── calculateTotal.py           # Total calculation
+│   ├── enrichCategory.py           # Category enrichment
+│   ├── fetchPolicies.py            # Confluence fetching
+│   ├── policyValidator.py          # Policy validation
+│   ├── formatReport.py             # Report formatting
+│   ├── postOdooComment.py          # Post to Odoo
+│   └── policyStore.py              # Policy caching
+├── models/
+│   └── schemas.py                  # Pydantic models
+├── utils/
+│   ├── confluence_client.py        # Confluence API client
+│   └── policy_helpers.py           # Helper functions
+└── tests/
+    ├── test_flow.py                # End-to-end test
+    └── confluence_test.py          # Confluence integration test
+```
+
+### Key Endpoints (Implementation Notes)
+
+All endpoints in `/endpoints` directory are production-ready based on the GitHub repo provided.
+
+**Critical endpoints with hard-coded logic:**
+1. `/validate-ocr` - Single OCR validation (Odoo only)
+2. `/calculate-total` - Pure arithmetic
+3. `/validate-policy` - Hard-coded rule engine with dynamic policy data
+
+**Integration endpoints:**
+1. `/fetch-odoo-expense` - Calls Odoo JSON-RPC API
+2. `/odoo-ocr` - Reads Odoo's pre-extracted OCR data
+3. `/fetch-policies` - Calls Confluence REST API (cached 24hrs)
+4. `/post-odoo-comment` - Posts via Odoo message_post
+
+**Utility endpoints:**
+1. `/enrich-category` - Policy-driven enrichment (no hard-coded categories)
+2. `/format-report` - Template-based formatting
+
+### FastAPI Server Entry Point
+
+```python
+# main.py
+
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
+from endpoints.fetchOdooExpense import router as fetch_router
+from endpoints.odooOCR import router as odoo_ocr_router
+from endpoints.OCRValidator import router as validator_router
+from endpoints.calculateTotal import router as total_router
+from endpoints.enrichCategory import router as enrich_router
+from endpoints.policyValidator import router as validate_policy_router
+from endpoints.formatReport import router as report_router
+from endpoints.postOdooComment import router as comment_router
+from endpoints.fetchPolicies import router as fetch_policies_router
+
+app = FastAPI(
+    title="Expense Reimbursement API",
+    description="Single OCR validation with Confluence policy integration",
+    version="3.0.0"
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Restrict in production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Register all routers
+app.include_router(fetch_router, tags=["Odoo Integration"])
+app.include_router(odoo_ocr_router, tags=["OCR"])
+app.include_router(validator_router, tags=["Validation"])
+app.include_router(total_router, tags=["Validation"])
+app.include_router(enrich_router, tags=["Enrichment"])
+app.include_router(validate_policy_router, tags=["Policy"])
+app.include_router(report_router, tags=["Reporting"])
+app.include_router(comment_router, tags=["Odoo Integration"])
+app.include_router(fetch_policies_router, tags=["Policy"])
+
+@app.get("/")
+async def root():
+    return {
+        "status": "running",
+        "service": "Expense Reimbursement API",
+        "version": "3.0.0",
+        "phase": "Phase 1 - Development",
+        "ocr_approach": "Single OCR (Odoo only)",
+        "policy_source": "Live Confluence API (THG Policies)",
+        "tools": 9,
+        "endpoints": {
+            "fetch": "/fetch-odoo-expense",
+            "ocr": "/odoo-ocr",
+            "validate_ocr": "/validate-ocr",
+            "calculate_total": "/calculate-total",
+            "enrich_category": "/enrich-category",
+            "fetch_policies": "/fetch-policies",
+            "validate_policy": "/validate-policy",
+            "format_report": "/format-report",
+            "post_comment": "/post-odoo-comment",
+        }
+    }
+
+@app.get("/health")
+async def health():
+    return {"status": "healthy"}
+```
+
+---
+
+## TESTING
+
+### End-to-End Test Flow
+
+```python
+# tests/test_flow.py
+
+# Complete workflow test with real Odoo data
+
+BASE_URL = "http://localhost:8000"
+TEST_EXPENSE_SHEET_ID = 542
+COMPANY_ID = "hashgraph_inc"
+
+# Step 1: Fetch expense
+expense_data = requests.post(f"{BASE_URL}/fetch-odoo-expense", json={
+    "expense_sheet_id": TEST_EXPENSE_SHEET_ID,
+    **ODOO_CREDENTIALS
+}).json()
+
+# Step 2: OCR extraction for each invoice
+for line in expense_data['expense_lines']:
+    ocr_result = requests.post(f"{BASE_URL}/odoo-ocr", json={
+        "expense_line_id": line['id'],
+        **ODOO_CREDENTIALS
+    }).json()
+    
+    # Step 3: Validate amount
+    validation = requests.post(f"{BASE_URL}/validate-ocr", json={
+        "odoo_output": ocr_result,
+        "employee_claim": line['total_amount'],
+        "invoice_id": f"INV-{line['id']}",
+        "currency": "CHF"
+    }).json()
+    
+    print(f"Invoice {line['id']}: {'✓ MATCH' if validation['amount_matched'] else '✗ MISMATCH'}")
+
+# Step 4: Calculate total
+# Step 5: Enrich categories
+# Step 6: Fetch policies from Confluence
+# Step 7: Validate policy compliance
+# Step 8: Format report
+# Step 9: Post comment
+
+# See complete implementation in tests/test_flow.py
+```
+
+### Confluence Integration Test
+
+```python
+# tests/confluence_test.py
+
+from utils.confluence_client import get_confluence_client
+from endpoints.policyStore import get_policy, invalidate_cache
+
+# Test 1: Confluence connectivity
+client = get_confluence_client()
+index = client.get_policy_index()  # Fetches "Policy API Index" page
+print(f"Found {len(index)} categories")
+
+# Test 2: Fetch detailed category pages
+details = client.get_category_details("Meals")
+print(f"Meals policy: {details['validation_rules']['max_amount']} CHF")
+
+# Test 3: Full policy store integration
+policy = get_policy("hashgraph_inc")
+print(f"Loaded {len(policy.categories)} categories from Confluence")
+```
+
+---
+
+## COMMON MISTAKES TO AVOID
+
+### ❌ Mistake 1: Putting Validation Logic in AgenticGenie Tools
+
+**WRONG:**
+```python
+# In AgenticGenie tool code (DON'T DO THIS)
+def ocr_validator(odoo_output, employee_claim):
+    # ❌ This uses GPT-4o and will hallucinate under load
+    if odoo_output['amount'] != employee_claim:
+        return {"error": "Amounts don't match"}
+```
+
+**CORRECT:**
+```python
+# AgenticGenie tool is just configuration - no code!
+Tool Name: OCRValidator
+API Endpoint: https://expense-tools.onrender.com/validate-ocr
+# Tool just sends HTTP POST - validation happens in Render
+```
+
+### ❌ Mistake 2: Hard-coding Categories
+
+**WRONG:**
+```python
+# In enrich_category.py endpoint (DON'T DO THIS)
+if 18 <= hour <= 22:
+    return "Dinner"  # ❌ Hard-coded category
+```
+
+**CORRECT:**
+```python
+# Dynamic from Confluence policy
+policy = get_policy(company_id)
+for category in policy.categories:
+    for time_rule in category.enrichment_rules.time_based:
+        if matches_time_rule(time, time_rule):
+            return category.name  # ✓ From Confluence
+```
+
+### ❌ Mistake 3: Using Textract (It's Removed!)
+
+**WRONG:**
+```python
+# DON'T call Textract - it's been removed
+textract_result = call_textract(invoice)
+```
+
+**CORRECT:**
+```python
+# Use Odoo OCR only
+odoo_result = call_odoo_ocr(expense_line_id)
+# This is the single source of truth
+```
+
+### ❌ Mistake 4: Not Using Tool Annotations
+
+**WRONG:**
+```
+Tool Annotation: "Validates OCR results"  # Too vague
+```
+
+**CORRECT:**
+```
+Tool Annotation: "⚠️ CRITICAL: Validates Odoo OCR amount against employee claim.
+This tool uses HARD-CODED logic (ZERO AI). Always call for EACH invoice.
+NEVER validate amounts yourself. Use exact discrepancy_message returned."
+```
+
+### ❌ Mistake 5: Modifying Tool Response Messages
+
+**WRONG:**
+```python
+# In agent prompt or playbook
+message = tool_result['discrepancy_message']
+# Don't improve or rephrase this message
+improved_message = f"There's a discrepancy: {message}"  # ❌ WRONG
+```
+
+**CORRECT:**
+```python
+# Use exact message from tool
+message = tool_result['discrepancy_message']
+# "Value in invoice as per AG is 34.90, not 33.90 as reported"
+# Use this EXACTLY as-is in final report
+```
+
+### ❌ Mistake 6: Thinking Policies are Mock Data
+
+**WRONG:**
+```
+# Assuming policies are hard-coded
+POLICIES = {
+    "Meals": {"max_amount": 50.0}  # ❌ Don't hard-code
+}
+```
+
+**CORRECT:**
+```python
+# Policies come from live Confluence API
+policy = get_policy(company_id)  # Fetches from Confluence
+max_amount = policy.categories[0].validation_rules.max_amount
+# This is live data from Confluence, cached for 24 hours
+```
+
+### ❌ Mistake 7: Not Checking Risk Levels
+
+**WRONG:**
+```python
+# Ignoring risk_level from validation
+if validation['amount_matched']:
+    # All good!
+```
+
+**CORRECT:**
+```python
+# Check both matched status AND risk level
+if validation['amount_matched']:
+    # Amount matches
+else:
+    risk = validation['risk_level']
+    if risk == "CRITICAL":
+        # Escalate immediately
+    elif risk == "HIGH":
+        # Flag for priority review
+```
+
+### ❌ Mistake 8: Assuming OCR Always Succeeds
+
+**WRONG:**
+```python
+# Assuming odoo_amount is always present
+amount = validation['odoo_amount']  # ❌ Could be None
+```
+
+**CORRECT:**
+```python
+# Handle OCR failure
+if validation.get('odoo_amount') is None:
+    # OCR extraction failed
+    mark_for_manual_review(invoice_id)
+else:
+    amount = validation['odoo_amount']
+```
+
+---
+
+## SUCCESS CRITERIA
+
+### Validation Accuracy
+- ✅ **OCR Extraction**: Odoo OCR successfully extracts amounts from 95%+ of invoices
+- ✅ **Amount Validation**: 100% accurate detection of discrepancies between OCR and employee claims
+- ✅ **Total Calculation**: Correct arithmetic for all multi-invoice requests
+- ✅ **Policy Compliance**: All submissions validated against live Confluence policies
+
+### Performance
+- ✅ **Processing Time**: < 60 seconds per invoice
+- ✅ **Policy Cache Hit Rate**: > 95% (24hr cache)
+- ✅ **End-to-End Workflow**: < 5 minutes for 10-invoice request
+
+### Data Quality
+- ✅ **Category Enrichment**: 90%+ accuracy using policy-driven time/vendor rules
+- ✅ **Report Clarity**: All findings clear, specific, actionable for Finance Manager
+- ✅ **Message Format**: Exact PRD format maintained (no AI modifications)
+
+### Reliability
+- ✅ **Confluence Integration**: 100% uptime with 24hr caching fallback
+- ✅ **OCR Failure Handling**: Graceful degradation when Odoo OCR fails
+- ✅ **Error Recovery**: Retry logic for network failures
+
+---
+
+## OPEN QUESTIONS & NEXT STEPS
+
+### Open Questions
+
+1. **Webhook Configuration:**
+   - What is the exact Zoho/Odoo webhook endpoint format?
+   - How do we authenticate the webhook (API key, OAuth)?
+
+2. **Testing Environment:**
+   - Is there a sandbox Odoo instance for testing?
+   - Sample expense requests with known discrepancies?
+
+3. **Multi-currency:**
+   - Do we need to handle multiple currencies in one expense?
+   - Currency conversion rates from where?
+
+4. **Manual Review Process:**
+   - What happens after Finance Manager sees violations?
+   - Approval/rejection workflow in Odoo?
+
+5. **Confluence Access:**
+   - Do we have edit access to update policy pages?
+   - Who maintains the policy content?
+
+### Next Steps (Implementation Order)
+
+**Week 1: Core Validation**
+- ✅ Set up Render server with FastAPI
+- ✅ Implement `/fetch-odoo-expense` endpoint
+- ✅ Implement `/odoo-ocr` endpoint
+- ✅ Implement `/validate-ocr` endpoint (single OCR logic)
+- ✅ Implement `/calculate-total` endpoint
+- ✅ Test validation logic with sample data
+
+**Week 2: Confluence Integration**
+- ✅ Implement `confluence_client.py`
+- ✅ Implement `/fetch-policies` endpoint
+- ✅ Implement `policyStore.py` with caching
+- ✅ Test policy fetching from THG Policies space
+- ✅ Verify category enrichment uses Confluence data
+
+**Week 3: Policy Validation & Enrichment**
+- ✅ Implement `/enrich-category` endpoint (policy-driven)
+- ✅ Implement `/validate-policy` endpoint
+- ✅ Implement `/format-report` endpoint
+- ✅ Implement `/post-odoo-comment` endpoint
+- ✅ End-to-end testing with real Odoo data
+
+**Week 4: AgenticGenie Configuration**
+- ⏳ Create 9 tools in AgenticGenie platform
+- ⏳ Create 4 agents with correct prompts
+- ⏳ Create playbook with workflow definition
+- ⏳ Test manual triggering
+- ⏳ Verify complete end-to-end flow
+
+**Week 5: Phase 2 Preparation (Optional)**
+- ⏳ Set up AWS Lambda infrastructure
+- ⏳ Migrate endpoints to Lambda
+- ⏳ Configure webhook from Zoho/Odoo
+- ⏳ Production testing
+
+---
+
+## HOW TO USE THIS PROMPT
+
+**For new conversations with any LLM (Claude, ChatGPT, Gemini, etc.):**
+
+1. Copy this entire prompt
+2. Paste at the beginning of a new chat
+3. The LLM will have complete context about the project
+4. You can immediately start asking specific questions like:
+   - "Help me implement the OCRValidator endpoint with single OCR logic"
+   - "Show me how to configure the CategoryEnricher tool in AgenticGenie"
+   - "Debug this Confluence API integration error"
+   - "Review my validation logic - is it deterministic enough?"
+   - "How should I structure the policy cache invalidation?"
+---

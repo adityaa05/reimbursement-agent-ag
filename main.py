@@ -3,7 +3,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import ALL endpoint routers
 from endpoints.fetchOdooExpense import router as fetch_router
-from endpoints.textractOCR import router as textract_router
+
+# from endpoints.textractOCR import router as textract_router
 from endpoints.odooOCR import router as odoo_ocr_router
 from endpoints.OCRValidator import router as validator_router
 from endpoints.calculateTotal import router as total_router
@@ -30,7 +31,7 @@ app.add_middleware(
 
 # Register ALL routers with tags
 app.include_router(fetch_router, tags=["Odoo Integration"])
-app.include_router(textract_router, tags=["OCR"])
+# app.include_router(textract_router, tags=["OCR"])
 app.include_router(odoo_ocr_router, tags=["OCR"])
 app.include_router(validator_router, tags=["Validation"])
 app.include_router(total_router, tags=["Validation"])
@@ -50,7 +51,7 @@ async def root():
         "phase": "Phase 1 - Development (Policy-Driven)",
         "endpoints": {
             "fetch": "/fetch-odoo-expense",
-            "textract_ocr": "/textract-ocr",
+            # "textract_ocr": "/textract-ocr",
             "zoho_ocr": "/zoho-ocr",
             "validate_dual_ocr": "/validate-ocr",
             "calculate_total": "/calculate-total",

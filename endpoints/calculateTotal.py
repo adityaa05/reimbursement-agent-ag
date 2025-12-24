@@ -6,22 +6,30 @@ router = APIRouter()
 
 @router.post("/calculate-total", response_model=TotalCalculationResponse)
 async def calculate_total(request: TotalCalculationRequest):
-    # Calculate total and validate Pure arithmetic
+    """
+    Calculates total from individual validations and compares with employee's reported total.
+
+    Architecture v3.0: Uses SingleOCRValidationResponse objects
+    Pure arithmetic - ZERO AI dependency
+    """
+
     try:
         # Sum all verified amounts (hard-coded arithmetic)
         calculated_total = sum(
-            [
-                validation.verified_amount
-                for validation in request.individual_validations
-            ]
+            validation.verified_amount
+            for validation in request.individual_validations
+            if validation.verified_amount is not None
         )
 
         reported_total = request.employee_reported_total
 
-        # Hard-coded comparison logic
-        if abs(calculated_total - reported_total) < 0.01:
+        # Compare totals (hard-coded tolerance)
+        tolerance = 0.01
+        matched = abs(calculated_total - reported_total) < tolerance
+
+        if matched:
             return TotalCalculationResponse(
-                calculated_total=calculated_total,
+                calculated_total=round(calculated_total, 2),
                 employee_reported_total=reported_total,
                 matched=True,
                 discrepancy_amount=0.0,
@@ -31,15 +39,12 @@ async def calculate_total(request: TotalCalculationRequest):
         else:
             discrepancy = abs(calculated_total - reported_total)
 
-            # Exact message format from PRD
-            message = f"Total is incorrect by {discrepancy:.2f} {request.currency}, should be {calculated_total:.2f} {request.currency}"
-
             return TotalCalculationResponse(
-                calculated_total=calculated_total,
+                calculated_total=round(calculated_total, 2),
                 employee_reported_total=reported_total,
                 matched=False,
-                discrepancy_amount=discrepancy,
-                discrepancy_message=message,
+                discrepancy_amount=round(discrepancy, 2),
+                discrepancy_message=f"Total is incorrect by {discrepancy:.2f} {request.currency}, should be {calculated_total:.2f} {request.currency}",
                 currency=request.currency,
             )
 

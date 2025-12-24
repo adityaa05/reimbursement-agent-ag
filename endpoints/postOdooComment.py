@@ -9,6 +9,8 @@ router = APIRouter()
 async def post_odoo_comment(request: OdooCommentRequest):
     """
     Post verification comment to Odoo expense sheet
+
+    FIXED: Correct args format to avoid IndexError
     """
     try:
         # Step 1: Authenticate with Odoo
@@ -34,15 +36,17 @@ async def post_odoo_comment(request: OdooCommentRequest):
 
         # Step 2: Post comment using message_post
         comment_url = f"{request.odoo_url}/web/dataset/call_kw"
+
+        # CRITICAL FIX: Pass expense_sheet_id as first element of args array
+        # This matches Odoo's expected format: method(id, **kwargs)
         comment_payload = {
             "jsonrpc": "2.0",
             "method": "call",
             "params": {
                 "model": "hr.expense.sheet",
                 "method": "message_post",
-                "args": [],
+                "args": [request.expense_sheet_id],  # <-- FIXED: ID in args, not kwargs
                 "kwargs": {
-                    "res_id": request.expense_sheet_id,
                     "body": request.comment_html,
                     "message_type": "comment",
                     "subtype_xmlid": "mail.mt_comment",
