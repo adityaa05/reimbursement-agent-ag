@@ -10,14 +10,12 @@ async def validate_ocr(request: SingleOCRValidationRequest):
     Validates Odoo OCR extracted amount against employee's claimed amount.
 
     Architecture v3.0: Single OCR source (Odoo only)
-    - No Textract comparison
-    - No OCR consensus check
-    - Risk based purely on discrepancy size
 
-    Risk Levels:
-    - LOW: Amount matches or small discrepancy (< 5 CHF)
-    - MEDIUM: Moderate discrepancy (5-50 CHF)
-    - HIGH: Large discrepancy (50-100 CHF)
+    Risk Levels (WithoutTextractContext.txt:257-263):
+    - MATCH: Perfect match (< 0.01 difference)
+    - LOW: Small discrepancy (0.01 - 5.00 CHF)
+    - MEDIUM: Moderate discrepancy (5.01 - 50.00 CHF)
+    - HIGH: Large discrepancy (50.01 - 100.00 CHF)
     - CRITICAL: Very large discrepancy (> 100 CHF) or OCR failed
     """
 
@@ -26,7 +24,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
         claimed_amt = request.employee_claim
 
         # ============================================
-        # HANDLE OCR FAILURE
+        # HANDLE OCR FAILURE (WithoutTextractContext.txt:268-277)
         # ============================================
         if odoo_amt is None:
             return SingleOCRValidationResponse(
@@ -48,7 +46,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
         amount_matched = abs(odoo_amt - claimed_amt) < tolerance
 
         if amount_matched:
-            # Perfect match
+            # FIX 1: Return "MATCH" not "LOW" (WithoutTextractContext.txt:281-289)
             return SingleOCRValidationResponse(
                 invoice_id=request.invoice_id,
                 odoo_amount=odoo_amt,
@@ -57,7 +55,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
                 amount_matched=True,
                 discrepancy_message=None,
                 discrepancy_amount=0.0,
-                risk_level="LOW",
+                risk_level="MATCH",  # CORRECTED
                 currency=request.currency,
             )
         else:
@@ -65,12 +63,12 @@ async def validate_ocr(request: SingleOCRValidationRequest):
             discrepancy = abs(odoo_amt - claimed_amt)
 
             # ============================================
-            # RISK ASSESSMENT (HARD-CODED THRESHOLDS)
+            # RISK ASSESSMENT (WithoutTextractContext.txt:295-303)
             # ============================================
             if discrepancy > 100:
                 risk = "CRITICAL"
             elif discrepancy > 50:
-                risk = "HIGH"
+                risk = "HIGH"  # FIX 2: Proper assignment (was stray literal)
             elif discrepancy > 5:
                 risk = "MEDIUM"
             else:
@@ -79,7 +77,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
             return SingleOCRValidationResponse(
                 invoice_id=request.invoice_id,
                 odoo_amount=odoo_amt,
-                verified_amount=odoo_amt,  # Use Odoo as single source of truth
+                verified_amount=odoo_amt,
                 employee_reported_amount=claimed_amt,
                 amount_matched=False,
                 discrepancy_message=f"Value in invoice as per AG is {odoo_amt:.2f}, not {claimed_amt:.2f} as reported",
