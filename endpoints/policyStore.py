@@ -1,9 +1,17 @@
 """
-Policy Store - Now fetches from Confluence (Phase 2)
-Maintains same interface, but replaces mock data with real Confluence data
+Policy Store - FIXED VERSION
+Removed all hardcoded keyword injections and Safe Mode policies
+
+Changes:
+1. ❌ REMOVED: Hardcoded keyword augmentation (lines 192-221)
+2. ✅ ADDED: Config-based fallback policy
+3. ✅ ADDED: Comprehensive debug logging
+4. ✅ ADDED: Policy validation on load
 """
 
 import time
+import json
+from pathlib import Path
 from typing import Dict, List, Any, Optional
 from fastapi import HTTPException
 from models.schemas import (
@@ -30,7 +38,7 @@ def get_policy(company_id: str, use_fallback: bool = True) -> PolicyData:
     1. Fresh data (< 24hrs): Normal operation
     2. Stale cache (24hrs - 7 days): Degraded mode, log warning
     3. Confluence offline + stale cache: Use last-known-good, flag critical
-    4. No cache at all: BLOCK workflow, manual intervention required
+    4. No cache at all: Use config-based fallback policy
 
     Args:
         company_id: Company identifier
@@ -40,7 +48,7 @@ def get_policy(company_id: str, use_fallback: bool = True) -> PolicyData:
         PolicyData object
 
     Raises:
-        HTTPException: When no policy data is available and workflow must be blocked
+        HTTPException: When no policy data is available
     """
     cache_key = f"policy_{company_id}"
     now = time.time()
@@ -141,48 +149,58 @@ def get_policy(company_id: str, use_fallback: bool = True) -> PolicyData:
 
             categories.append(category_def)
 
+            # ========================================================
+            # ✅ ADDED: Debug logging for loaded categories
+            # ========================================================
             logger.debug(
                 "Loaded policy category",
                 category=category_name,
                 max_amount=validation_rules.max_amount,
+                vendor_keywords_count=len(enrichment_rules.vendor_keywords or []),
+                time_rules_count=len(enrichment_rules.time_based or []),
             )
 
-        # Ensure 'Other' category exists
+            # Detailed keyword logging
+            if enrichment_rules.vendor_keywords:
+                logger.debug(
+                    f"  Keywords for {category_name}",
+                    sample_keywords=enrichment_rules.vendor_keywords[:10],
+                    total_count=len(enrichment_rules.vendor_keywords),
+                )
+            else:
+                logger.warning(
+                    f"⚠️  No vendor keywords defined for {category_name}",
+                    category=category_name,
+                )
+
+        
+        # ========================================================
+        # ENSURE "Other" CATEGORY EXISTS (Safe fallback)
+        # ========================================================
         if not any(c.name == "Other" for c in categories):
+            logger.info("Adding 'Other' fallback category (not in Confluence)")
             categories.append(
                 CategoryDefinition(
                     name="Other",
-                    aliases=[],
-                    enrichment_rules=EnrichmentRules(),
+                    aliases=["Miscellaneous", "General", "Uncategorized"],
+                    enrichment_rules=EnrichmentRules(
+                        vendor_keywords=[], time_based=None
+                    ),
                     validation_rules=ValidationRules(
-                        max_amount=100.0,  # Default limit
+                        max_amount=100.0,  # Conservative default
                         currency="CHF",
                         requires_receipt=True,
+                        requires_attendees=False,
+                        max_age_days=90,
                     ),
                 )
             )
 
-        # AUGMENTATION: Force keyword injection for common missing keywords in Confluence
-        # This handles the "Kenzi Tower Hotel" case if "Accommodation" lacks the "hotel" keyword
-        for cat in categories:
-            if cat.name.lower() in ["accommodation", "hotel"]:
-                if cat.enrichment_rules.vendor_keywords is None:
-                    cat.enrichment_rules.vendor_keywords = []
-                
-                # Add critical keywords if missing
-                critical_keywords = ["hotel", "kenzi", "inn", "resort", "suites", "accommodation", "lodging", "night", "stay"]
-                for kw in critical_keywords:
-                    if kw not in cat.enrichment_rules.vendor_keywords:
-                        cat.enrichment_rules.vendor_keywords.append(kw)
-            
-            elif cat.name.lower() in ["travel", "transport"]:
-                if cat.enrichment_rules.vendor_keywords is None:
-                    cat.enrichment_rules.vendor_keywords = []
-                
-                critical_keywords = ["uber", "taxi", "train", "flight", "air"]
-                for kw in critical_keywords:
-                    if kw not in cat.enrichment_rules.vendor_keywords:
-                        cat.enrichment_rules.vendor_keywords.append(kw)
+
+        # ========================================================
+        # ✅ VALIDATE POLICY DATA
+        # ========================================================
+        _validate_policy_data(categories)
 
         # Build policy data
         policy_data = PolicyData(
@@ -241,147 +259,147 @@ def get_policy(company_id: str, use_fallback: bool = True) -> PolicyData:
             )
             return _last_known_good[cache_key]
 
-        # Option 3: Use HARD-CODED FALLBACK (Safe Mode)
+        # Option 3: Use CONFIG-BASED FALLBACK (Safe Mode)
         logger.warning(
-            "Confluence unavailable and no cache - using Safe Mode policy",
+            "Confluence unavailable and no cache - using Config-Based Fallback",
             company_id=company_id,
             degradation_level="SAFE_MODE",
         )
-        return _get_default_policy(company_id)
+        return _load_fallback_policy_from_config(company_id)
 
 
-def _get_default_policy(company_id: str) -> PolicyData:
+def _validate_policy_data(categories: List[CategoryDefinition]):
     """
-    Hard-coded fallback policy for Safe Mode.
-    Ensures the bot remains functional (albeit with default rules)
-    during Confluence outages or initial setup.
-    """
-    categories = [
-        CategoryDefinition(
-            name="Meals",
-            aliases=["Food", "Dining", "Restaurant", "Lunch", "Dinner", "Breakfast"],
-            enrichment_rules=EnrichmentRules(
-                time_based=[
-                    {"start_hour": 6, "end_hour": 10, "subcategory": "Breakfast"},
-                    {"start_hour": 11, "end_hour": 14, "subcategory": "Lunch"},
-                    {"start_hour": 18, "end_hour": 22, "subcategory": "Dinner"},
-                ],
-                vendor_keywords=[
-                    "restaurant",
-                    "cafe",
-                    "coffee",
-                    "burger",
-                    "pizza",
-                    "diner",
-                    "bistro",
-                    "mcdonalds",
-                    "starbucks",
-                    "subway",
-                    "kfc",
-                    "dominos",
-                ],
-            ),
-            validation_rules=ValidationRules(
-                max_amount=50.0,
-                currency="CHF",
-                requires_receipt=True,
-                requires_attendees=True,
-            ),
-        ),
-        CategoryDefinition(
-            name="Travel",
-            aliases=["Transport", "Taxi", "Flight", "Train", "Bus", "Uber"],
-            enrichment_rules=EnrichmentRules(
-                vendor_keywords=[
-                    "uber",
-                    "lyft",
-                    "taxi",
-                    "airline",
-                    "air",
-                    "flight",
-                    "train",
-                    "sbb",
-                    "rail",
-                    "bus",
-                    "transport",
-                    "swiss",
-                    "easyjet",
-                ]
-            ),
-            validation_rules=ValidationRules(
-                max_amount=200.0,
-                currency="CHF",
-                requires_receipt=True,
-                max_age_days=30,
-            ),
-        ),
-        CategoryDefinition(
-            name="Hotel",
-            aliases=["Lodging", "Accommodation", "Stay", "Motel", "Resort"],
-            enrichment_rules=EnrichmentRules(
-                vendor_keywords=[
-                    "hotel",
-                    "inn",
-                    "resort",
-                    "suites",
-                    "lodging",
-                    "motel",
-                    "hostel",
-                    "kenzi",  # Specific fix for user case
-                    "marriott",
-                    "hilton",
-                    "hyatt",
-                    "accor",
-                    "airbnb",
-                ]
-            ),
-            validation_rules=ValidationRules(
-                max_amount=150.0,
-                currency="CHF",
-                requires_receipt=True,
-            ),
-        ),
-        CategoryDefinition(
-            name="Electronics",
-            aliases=["Tech", "Hardware", "Software", "Computer", "Phone"],
-            enrichment_rules=EnrichmentRules(
-                vendor_keywords=[
-                    "apple",
-                    "microsoft",
-                    "dell",
-                    "hp",
-                    "lenovo",
-                    "samsung",
-                    "mediamarkt",
-                    "digitec",
-                    "amazon",
-                ]
-            ),
-            validation_rules=ValidationRules(
-                max_amount=500.0,
-                currency="CHF",
-                requires_receipt=True,
-            ),
-        ),
-        CategoryDefinition(
-            name="Other",
-            aliases=["Miscellaneous", "General"],
-            enrichment_rules=EnrichmentRules(),
-            validation_rules=ValidationRules(
-                max_amount=100.0,
-                currency="CHF",
-                requires_receipt=True,
-            ),
-        ),
-    ]
+    Validate loaded policy data for completeness
 
-    return PolicyData(
-        company_id=company_id,
-        effective_date="2024-01-01",
-        categories=categories,
-        default_category="Other",
-        cache_ttl=0,  # Do not cache safe mode
-    )
+    Checks:
+    1. All categories have validation rules
+    2. All categories have max_amount > 0
+    3. At least one category has vendor keywords
+    4. Time rules are properly formatted
+    """
+    if not categories:
+        raise ValueError("Policy must contain at least one category")
+
+    has_vendor_keywords = False
+
+    for cat in categories:
+        # Check validation rules
+        if not cat.validation_rules:
+            logger.warning(f"Category {cat.name} missing validation rules")
+            continue
+
+        if cat.validation_rules.max_amount <= 0:
+            logger.warning(
+                f"Category {cat.name} has invalid max_amount: {cat.validation_rules.max_amount}"
+            )
+
+        # Check enrichment rules
+        if cat.enrichment_rules.vendor_keywords:
+            has_vendor_keywords = True
+
+            # Validate keywords are not empty strings
+            valid_keywords = [
+                k for k in cat.enrichment_rules.vendor_keywords if k.strip()
+            ]
+            if len(valid_keywords) < len(cat.enrichment_rules.vendor_keywords):
+                logger.warning(
+                    f"Category {cat.name} has empty vendor keywords",
+                    total=len(cat.enrichment_rules.vendor_keywords),
+                    valid=len(valid_keywords),
+                )
+
+        # Check time rules format
+        if cat.enrichment_rules.time_based:
+            for time_rule in cat.enrichment_rules.time_based:
+                if "start_hour" not in time_rule or "end_hour" not in time_rule:
+                    logger.warning(
+                        f"Category {cat.name} has invalid time rule",
+                        rule=time_rule,
+                    )
+
+    if not has_vendor_keywords:
+        logger.warning(
+            "⚠️  NO categories have vendor keywords defined - enrichment will always fail!"
+        )
+
+
+def _load_fallback_policy_from_config(company_id: str) -> PolicyData:
+    """
+    Load fallback policy from config file (NOT hardcoded)
+
+    This replaces the old _get_default_policy() function
+    """
+    config_path = Path(__file__).parent.parent / "config" / "fallback_policy.json"
+
+    try:
+        logger.info("Loading fallback policy from config", path=str(config_path))
+
+        if not config_path.exists():
+            logger.error(
+                "Fallback policy config file not found",
+                path=str(config_path),
+            )
+            raise FileNotFoundError(
+                f"Fallback policy config not found: {config_path}\n"
+                f"Create config/fallback_policy.json with policy definitions"
+            )
+
+        with open(config_path) as f:
+            policy_dict = json.load(f)
+
+        # Parse into PolicyData object
+        categories = []
+        for cat_dict in policy_dict["categories"]:
+            # Parse enrichment rules
+            enrichment_dict = cat_dict.get("enrichment_rules", {})
+            enrichment_rules = EnrichmentRules(
+                time_based=enrichment_dict.get("time_based"),
+                vendor_keywords=enrichment_dict.get("vendor_keywords"),
+            )
+
+            # Parse validation rules
+            validation_dict = cat_dict.get("validation_rules", {})
+            validation_rules = ValidationRules(
+                max_amount=validation_dict.get("max_amount", 100.0),
+                currency=validation_dict.get("currency", "CHF"),
+                requires_receipt=validation_dict.get("requires_receipt", True),
+                requires_attendees=validation_dict.get("requires_attendees", False),
+                max_age_days=validation_dict.get("max_age_days", 90),
+            )
+
+            categories.append(
+                CategoryDefinition(
+                    name=cat_dict["name"],
+                    aliases=cat_dict.get("aliases", []),
+                    enrichment_rules=enrichment_rules,
+                    validation_rules=validation_rules,
+                )
+            )
+
+        policy_data = PolicyData(
+            company_id=company_id,
+            effective_date=policy_dict.get("effective_date", "2024-01-01"),
+            categories=categories,
+            default_category=policy_dict.get("default_category", "Other"),
+            cache_ttl=0,  # Do not cache fallback
+        )
+
+        logger.info(
+            "Fallback policy loaded from config",
+            categories_count=len(categories),
+        )
+
+        return policy_data
+
+    except FileNotFoundError:
+        raise
+    except json.JSONDecodeError as e:
+        logger.error("Invalid JSON in fallback policy config", error=str(e))
+        raise ValueError(f"Invalid JSON in {config_path}: {e}")
+    except Exception as e:
+        logger.error("Failed to load fallback policy", error=str(e))
+        raise
 
 
 def invalidate_cache(company_id: Optional[str] = None):

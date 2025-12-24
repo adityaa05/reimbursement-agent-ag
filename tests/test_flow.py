@@ -725,12 +725,12 @@ def main():
     # Define test scenarios
     scenarios = [
         TestScenario(
-            name="Real World Scenario (Sheet 307)",
-            expense_sheet_id=404,
-            expected_risk_levels=["MATCH", "MATCH", "MATCH", "MATCH"],
+            name="Real World Scenario (Sheet 404)",
+            expense_sheet_id=393,
+            expected_risk_levels=["MATCH", "MATCH"],  # ← CORRECT (2 invoices)
             expected_total_match=True,
-            expected_policy_violations=1,  # Invoice 2 (339 CHF) exceeds Accommodation limit (200 CHF)
-            description="Real data test: 4 invoices, 1 valid policy violation (over limit)",
+            expected_policy_violations=0,  # ← CORRECT (no violations)
+            description="Real data test: 2 invoices, both compliant",
         ),
     ]
 

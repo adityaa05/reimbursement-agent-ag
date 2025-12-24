@@ -13,16 +13,17 @@ router = APIRouter()
 @router.post("/enrich-category", response_model=EnrichCategoryResponse)
 async def enrich_category(request: EnrichCategoryRequest):
     """
-    FIXED: Enrich missing invoice category using POLICY-DRIVEN rules
+    FIXED: Enhanced debug logging + Two-pass enrichment approach
 
     Changes from v1:
-    1. Two-pass approach: Vendor keywords FIRST, then time rules
-    2. Enhanced debug logging
-    3. Better fallback strategy
+    1. ✅ ADDED: Comprehensive debug logging for loaded policies
+    2. ✅ ADDED: Vendor normalization check
+    3. ✅ ADDED: Keyword match details
+    4. Two-pass approach maintained: Vendor keywords FIRST, then time rules
 
     NO HARD-CODED CATEGORIES - All rules dynamically loaded from policy
 
-    Rules applied in order (FIXED):
+    Rules applied in order:
     1. User-provided category (validate against policy)
     2. **Vendor keyword rules** (PRIORITY #1 - checked across ALL categories)
     3. **Time-based rules** (PRIORITY #2 - only if no vendor match)
@@ -36,10 +37,34 @@ async def enrich_category(request: EnrichCategoryRequest):
         print(f"\n[ENRICH] ===== Processing Invoice {request.invoice_id} =====")
         print(f"[ENRICH] Vendor: {request.vendor}")
         print(f"[ENRICH] Time: {request.time}")
+        print(f"[ENRICH] Date: {request.date}")
         print(f"[ENRICH] Existing Category: {request.existing_category}")
+
+        # ================================================================
+        # ✅ ADDED: Show loaded policy summary
+        # ================================================================
+        print(f"\n[ENRICH] === LOADED POLICY SUMMARY ===")
         print(f"[ENRICH] Policy has {len(policy_data.categories)} categories")
 
+        for cat in policy_data.categories:
+            keywords_count = len(cat.enrichment_rules.vendor_keywords or [])
+            time_rules_count = len(cat.enrichment_rules.time_based or [])
+
+            print(f"[ENRICH]   {cat.name}:")
+            print(f"[ENRICH]     - Vendor Keywords: {keywords_count}")
+            if keywords_count > 0:
+                sample = cat.enrichment_rules.vendor_keywords[:5]
+                print(f"[ENRICH]       Sample: {sample}")
+            else:
+                print(f"[ENRICH]       ⚠️  NO KEYWORDS DEFINED")
+
+            print(f"[ENRICH]     - Time Rules: {time_rules_count}")
+            if time_rules_count > 0:
+                print(f"[ENRICH]       Rules: {cat.enrichment_rules.time_based}")
+
+        # ================================================================
         # STEP 1: If category already exists, validate it against policy
+        # ================================================================
         if request.existing_category:
             category_def = find_category_by_name(policy_data, request.existing_category)
             if category_def:
@@ -63,17 +88,36 @@ async def enrich_category(request: EnrichCategoryRequest):
         # ================================================================
 
         if request.vendor:
-            print(f"\n[ENRICH] === PASS 1: Checking Vendor Keywords ===")
+            print(f"\n[ENRICH] === PASS 1: Checking Vendor Keywords (Priority #1) ===")
+            print(f"[ENRICH] Input vendor string: '{request.vendor}'")
+
+            # ✅ ADDED: Show normalized vendor for comparison
+            import re
+
+            vendor_normalized = request.vendor.lower().strip()
+            vendor_normalized = vendor_normalized.replace("\n", " ").replace("\r", " ")
+            vendor_normalized = re.sub(r"\s+", " ", vendor_normalized)
+            vendor_normalized = re.sub(
+                r"[^\w\s]", " ", vendor_normalized, flags=re.UNICODE
+            )
+            vendor_normalized = re.sub(r"\s+", " ", vendor_normalized).strip()
+
+            print(f"[ENRICH] Normalized vendor: '{vendor_normalized}'")
 
             for category_def in policy_data.categories:
                 enrichment_rules = category_def.enrichment_rules
 
                 # Skip if no vendor keywords defined
                 if not enrichment_rules.vendor_keywords:
+                    print(
+                        f"[ENRICH] Skipping {category_def.name} - no keywords defined"
+                    )
                     continue
 
                 print(f"\n[ENRICH] Trying category: {category_def.name}")
-                print(f"[ENRICH]   Keywords: {enrichment_rules.vendor_keywords[:5]}...")
+                print(
+                    f"[ENRICH]   Keywords ({len(enrichment_rules.vendor_keywords)}): {enrichment_rules.vendor_keywords[:10]}..."
+                )
 
                 # Check if vendor matches this category's keywords
                 if matches_vendor_keywords(
@@ -87,6 +131,8 @@ async def enrich_category(request: EnrichCategoryRequest):
                         rule_matched=f"VENDOR_TYPE_{category_def.name.upper().replace(' ', '_')}",
                         fallback_used=False,
                     )
+                else:
+                    print(f"[ENRICH]   ❌ No match in {category_def.name}")
         else:
             print(f"\n[ENRICH] ⚠️  No vendor provided, skipping vendor matching")
 
@@ -97,6 +143,7 @@ async def enrich_category(request: EnrichCategoryRequest):
 
         if request.time:
             print(f"\n[ENRICH] === PASS 2: Checking Time Rules (no vendor match) ===")
+            print(f"[ENRICH] Input time: {request.time}")
 
             for category_def in policy_data.categories:
                 enrichment_rules = category_def.enrichment_rules
@@ -117,7 +164,7 @@ async def enrich_category(request: EnrichCategoryRequest):
                         return EnrichCategoryResponse(
                             invoice_id=request.invoice_id,
                             suggested_category=category_def.name,
-                            confidence=0.95,
+                            confidence=0.75,  # Lower confidence than vendor match
                             rule_matched=f"TIME_BASED_{time_rule.get('subcategory', 'UNKNOWN').upper()}",
                             fallback_used=False,
                         )
@@ -131,6 +178,7 @@ async def enrich_category(request: EnrichCategoryRequest):
         print(
             f"\n[ENRICH] ⚠️  No rules matched, using fallback: {policy_data.default_category}"
         )
+        print(f"[ENRICH] ⚠️⚠️⚠️  ENRICHMENT FAILED - CHECK CONFLUENCE KEYWORDS!")
 
         return EnrichCategoryResponse(
             invoice_id=request.invoice_id,
