@@ -155,9 +155,7 @@ class ReportFormatterRequest(BaseModel):
     expense_sheet_id: int
     expense_sheet_name: str
     employee_name: str
-    dual_ocr_validations: List[
-        SingleOCRValidationResponse
-    ]  # UPDATED type (kept field name for compatibility)
+    single_ocr_validations: List[SingleOCRValidationResponse]
     total_validation: TotalCalculationResponse
     categories: Optional[List[str]] = None
     policy_validations: Optional[List[PolicyValidationResponse]] = None

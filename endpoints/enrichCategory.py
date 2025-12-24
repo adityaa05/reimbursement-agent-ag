@@ -49,22 +49,15 @@ async def enrich_category(request: EnrichCategoryRequest):
                 )
 
         # STEP 2: Apply enrichment rules from policy (NO HARD-CODED RULES)
+        
+        # PASS 1: Check Vendor Keywords (Highest Priority)
+        # Iterate through ALL categories to see if any match the vendor
         for category_def in policy_data.categories:
             enrichment_rules = category_def.enrichment_rules
+            
+            # DEBUG
+            # print(f"Checking {category_def.name} with keywords: {enrichment_rules.vendor_keywords}")
 
-            # RULE A: Time-based classification (DYNAMIC RULES FROM POLICY)
-            if request.time and enrichment_rules.time_based:
-                for time_rule in enrichment_rules.time_based:
-                    if matches_time_rule(request.time, time_rule):
-                        return EnrichCategoryResponse(
-                            invoice_id=request.invoice_id,
-                            suggested_category=category_def.name,
-                            confidence=0.95,
-                            rule_matched=f"TIME_BASED_{time_rule.get('subcategory', 'UNKNOWN').upper()}",
-                            fallback_used=False,
-                        )
-
-            # RULE B: Vendor-based classification (DYNAMIC KEYWORDS FROM POLICY)
             if request.vendor and enrichment_rules.vendor_keywords:
                 if matches_vendor_keywords(
                     request.vendor, enrichment_rules.vendor_keywords
@@ -76,6 +69,24 @@ async def enrich_category(request: EnrichCategoryRequest):
                         rule_matched=f"VENDOR_TYPE_{category_def.name.upper().replace(' ', '_')}",
                         fallback_used=False,
                     )
+
+        # PASS 2: Check Time Rules (Medium Priority)
+        # Only if no vendor matched in any category
+        for category_def in policy_data.categories:
+            enrichment_rules = category_def.enrichment_rules
+
+            if request.time and enrichment_rules.time_based:
+                for time_rule in enrichment_rules.time_based:
+                    if matches_time_rule(request.time, time_rule):
+                        return EnrichCategoryResponse(
+                            invoice_id=request.invoice_id,
+                            suggested_category=category_def.name,
+                            confidence=0.95,
+                            rule_matched=f"TIME_BASED_{time_rule.get('subcategory', 'UNKNOWN').upper()}",
+                            fallback_used=False,
+                        )
+
+        # STEP 3: FALLBACK - Use default category from policy
 
         # STEP 3: FALLBACK - Use default category from policy
         return EnrichCategoryResponse(

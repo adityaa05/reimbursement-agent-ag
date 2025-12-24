@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException
 from models.schemas import SingleOCRValidationRequest, SingleOCRValidationResponse
 from utils.logger import logger, log_endpoint_call
+from utils.validators import validate_currency, normalize_amount, validate_amount
 import time
 
 router = APIRouter()
@@ -22,8 +23,13 @@ async def validate_ocr(request: SingleOCRValidationRequest):
     start_time = time.time()
 
     try:
+        # ============================================
+        # INPUT VALIDATION
+        # ============================================
+        currency = validate_currency(request.currency)
+        claimed_amt = validate_amount(request.employee_claim, "employee_claim")
+
         odoo_amt = request.odoo_output.total_amount
-        claimed_amt = request.employee_claim
 
         # ============================================
         # HANDLE OCR FAILURE (WithoutTextractContext.txt:268-277)
@@ -38,7 +44,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
                 discrepancy_message="Odoo OCR failed to extract amount - manual review required",
                 discrepancy_amount=None,
                 risk_level="CRITICAL",
-                currency=request.currency,
+                currency=currency,
             )
 
             # Log execution
@@ -59,6 +65,12 @@ async def validate_ocr(request: SingleOCRValidationRequest):
             return result
 
         # ============================================
+        # NORMALIZE AMOUNTS
+        # ============================================
+        odoo_amt = normalize_amount(odoo_amt, currency)
+        claimed_amt = normalize_amount(claimed_amt, currency)
+
+        # ============================================
         # VALIDATE AMOUNT (HARD-CODED LOGIC - NO AI)
         # ============================================
         tolerance = 0.01
@@ -76,7 +88,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
                 discrepancy_message=None,
                 discrepancy_amount=0.0,
                 risk_level="MATCH",  # CORRECTED
-                currency=request.currency,
+                currency=currency,
             )
         else:
             # Mismatch detected
@@ -103,7 +115,7 @@ async def validate_ocr(request: SingleOCRValidationRequest):
                 discrepancy_message=f"Value in invoice as per AG is {odoo_amt:.2f}, not {claimed_amt:.2f} as reported",
                 discrepancy_amount=round(discrepancy, 2),
                 risk_level=risk,
-                currency=request.currency,
+                currency=currency,
             )
 
         # Log execution

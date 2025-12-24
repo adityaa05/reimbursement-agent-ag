@@ -82,10 +82,20 @@ async def odoo_ocr(request: OdooOCRRequest):
             ):
                 currency = line_data["currency_id"][1]
 
+        # Determine vendor name (Combine name and description to catch keywords)
+        name = line_data.get("name", "")
+        desc = line_data.get("description", "")
+        
+        # Handle Odoo returning False for empty fields
+        if isinstance(name, bool): name = ""
+        if isinstance(desc, bool): desc = ""
+        
+        vendor_name = f"{name} {desc}".strip()
+
         # Return OCR data (Odoo auto-populates these fields from invoice scan)
         return OdooOCRResponse(
             invoice_id=f"odoo-{line_data['id']}",
-            vendor=line_data.get("name"),
+            vendor=vendor_name,
             date=line_data.get("date"),
             total_amount=line_data.get("total_amount"),
             currency=currency,

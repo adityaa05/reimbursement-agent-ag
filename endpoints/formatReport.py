@@ -17,22 +17,17 @@ async def format_report(request: ReportFormatterRequest):
         lines.append(f"<p>Employee: <strong>{request.employee_name}</strong></p>")
         lines.append("<br/>")
 
-        lines.append("<p><strong>Dual OCR Verification:</strong></p>")
+        # Single OCR Verification Section
+        lines.append("<p><strong>OCR Verification:</strong></p>")
         lines.append("<ul>")
 
-        for idx, validation in enumerate(request.dual_ocr_validations, 1):
-            # Show OCR consensus status
-            if not validation.ocr_consensus:
-                lines.append(
-                    f"<li>Invoice {idx}: {validation.ocr_mismatch_message}</li>"
-                )
-
-            # Show amount validation
+        for idx, validation in enumerate(request.single_ocr_validations, 1):
+            # Show amount validation status
             if validation.amount_matched:
-                lines.append(f"<li>Invoice {idx}: No issue found</li>")
+                lines.append(f"<li>Invoice {idx}: No issue found (Match)</li>")
             else:
                 lines.append(
-                    f"<li>Invoice {idx}: {validation.discrepancy_message}</li>"
+                    f"<li>Invoice {idx}: {validation.discrepancy_message} [{validation.risk_level} RISK]</li>"
                 )
 
         lines.append("</ul>")
@@ -44,7 +39,7 @@ async def format_report(request: ReportFormatterRequest):
         else:
             lines.append(f"<p>{request.total_validation.discrepancy_message}</p>")
 
-        # Policy Compliance section (NEW)
+        # Policy Compliance section
         if request.policy_validations:
             lines.append("<br/>")
             lines.append("<p><strong>Policy Compliance:</strong></p>")
@@ -76,14 +71,8 @@ async def format_report(request: ReportFormatterRequest):
         lines.append("<p><strong>Overall Summary:</strong></p>")
         issues = []
 
-        ocr_disagreements = sum(
-            1 for v in request.dual_ocr_validations if not v.ocr_consensus
-        )
-        if ocr_disagreements > 0:
-            issues.append(f"{ocr_disagreements} invoice(s) with OCR disagreement")
-
         mismatched_count = sum(
-            1 for v in request.dual_ocr_validations if not v.amount_matched
+            1 for v in request.single_ocr_validations if not v.amount_matched
         )
         if mismatched_count > 0:
             issues.append(f"{mismatched_count} invoice(s) with amount mismatch")
@@ -91,7 +80,7 @@ async def format_report(request: ReportFormatterRequest):
         if not request.total_validation.matched:
             issues.append("total amount incorrect")
 
-        # Include policy violations in summary (NEW)
+        # Include policy violations in summary
         if request.policy_validations:
             policy_violations = sum(
                 1 for p in request.policy_validations if not p.compliant
