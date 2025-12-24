@@ -102,6 +102,7 @@ class EnrichCategoryRequest(BaseModel):
     vendor: Optional[str] = None
     date: Optional[str] = None
     time: Optional[str] = None
+    total_amount: Optional[float] = None  # NEW - for semantic hints
     existing_category: Optional[str] = None
     invoice_id: str
     company_id: str = "hashgraph_inc"
