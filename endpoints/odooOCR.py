@@ -1,5 +1,6 @@
 from fastapi import APIRouter, HTTPException
 import requests
+import re
 from models.schemas import OdooOCRRequest, OdooOCRResponse
 
 router = APIRouter()
@@ -7,7 +8,11 @@ router = APIRouter()
 
 @router.post("/odoo-ocr", response_model=OdooOCRResponse)
 async def odoo_ocr(request: OdooOCRRequest):
-    # Extract invoice data using Odoo's built-in OCR
+    """
+    Extract invoice data using Odoo's built-in OCR
+
+    FIXED: Proper vendor string cleaning to enable keyword matching
+    """
     try:
         # Authenticate with Odoo
         auth_url = f"{request.odoo_url}/web/session/authenticate"
@@ -82,20 +87,44 @@ async def odoo_ocr(request: OdooOCRRequest):
             ):
                 currency = line_data["currency_id"][1]
 
-        # Determine vendor name (Combine name and description to catch keywords)
+        # ================================================================
+        # CRITICAL FIX: Proper vendor name extraction and cleaning
+        # ================================================================
+
+        # Extract raw vendor components
         name = line_data.get("name", "")
         desc = line_data.get("description", "")
-        
+
         # Handle Odoo returning False for empty fields
-        if isinstance(name, bool): name = ""
-        if isinstance(desc, bool): desc = ""
-        
-        vendor_name = f"{name} {desc}".strip()
+        if isinstance(name, bool):
+            name = ""
+        if isinstance(desc, bool):
+            desc = ""
+
+        # Combine name and description
+        vendor_raw = f"{name} {desc}".strip()
+
+        # STEP 1: Remove newlines and carriage returns
+        vendor_clean = vendor_raw.replace("\n", " ").replace("\r", " ")
+
+        # STEP 2: Collapse multiple spaces into single space
+        vendor_clean = re.sub(r"\s+", " ", vendor_clean)
+
+        # STEP 3: Remove special characters but keep alphanumeric, spaces, hyphens
+        # This removes: >, <, emoji, etc. but keeps: "Münchner Stubn", "Mercure-Hotel"
+        vendor_clean = re.sub(r"[^\w\s-]", "", vendor_clean, flags=re.UNICODE)
+
+        # STEP 4: Final cleanup - collapse spaces again and strip
+        vendor_clean = re.sub(r"\s+", " ", vendor_clean).strip()
+
+        print(f"[ODOO OCR] Vendor extraction:")
+        print(f"  Raw:     '{vendor_raw[:50]}'")
+        print(f"  Cleaned: '{vendor_clean[:50]}'")
 
         # Return OCR data (Odoo auto-populates these fields from invoice scan)
         return OdooOCRResponse(
             invoice_id=f"odoo-{line_data['id']}",
-            vendor=vendor_name,
+            vendor=vendor_clean,  # Use cleaned vendor name
             date=line_data.get("date"),
             total_amount=line_data.get("total_amount"),
             currency=currency,

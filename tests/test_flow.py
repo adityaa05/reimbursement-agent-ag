@@ -726,7 +726,7 @@ def main():
     scenarios = [
         TestScenario(
             name="Real World Scenario (Sheet 307)",
-            expense_sheet_id=542,
+            expense_sheet_id=404,
             expected_risk_levels=["MATCH", "MATCH", "MATCH", "MATCH"],
             expected_total_match=True,
             expected_policy_violations=1,  # Invoice 2 (339 CHF) exceeds Accommodation limit (200 CHF)
