@@ -82,7 +82,7 @@ class ProcessExpenseVerificationResponse(BaseModel):
     policy_violations: int
     high_risk_invoices: int
 
-    # 🔥 NEW: Report data (instead of posting)
+    #  NEW: Report data (instead of posting)
     html_report: str
     plain_report: str
 
@@ -95,7 +95,7 @@ class ProcessExpenseVerificationResponse(BaseModel):
 )
 async def process_expense_verification(request: ProcessExpenseVerificationRequest):
     """
-    ⚠️ VERIFICATION ENDPOINT - Returns Report Data (Does NOT Post to Odoo)
+     VERIFICATION ENDPOINT - Returns Report Data (Does NOT Post to Odoo)
 
     This endpoint orchestrates the ENTIRE expense verification process:
     1. Fetch expense from Odoo
@@ -105,7 +105,7 @@ async def process_expense_verification(request: ProcessExpenseVerificationReques
     5. Enrich categories (Confluence policies)
     6. Validate policy compliance (rule engine)
     7. Format report (template)
-    8. 🔥 RETURN report data (instead of posting)
+    8.  RETURN report data (instead of posting)
 
     AgenticGenie workflow:
     - Agent 1 calls this endpoint → gets verification + report data
@@ -339,7 +339,7 @@ async def process_expense_verification(request: ProcessExpenseVerificationReques
         logger.info("Report formatted successfully")
 
         # ================================================================
-        # 🔥 STEP 8: RETURN REPORT DATA (DO NOT POST TO ODOO)
+        #  STEP 8: RETURN REPORT DATA (DO NOT POST TO ODOO)
         # ================================================================
         logger.info("Step 8: Returning report data (AgenticGenie will post)")
 
@@ -398,7 +398,7 @@ async def process_expense_verification(request: ProcessExpenseVerificationReques
             amount_mismatches=amount_mismatches,
             policy_violations=policy_violations_count,
             high_risk_invoices=high_risk_count,
-            # 🔥 NEW: Return report data instead of posting
+            #  NEW: Return report data instead of posting
             html_report=report.html_comment,
             plain_report=report.formatted_comment,
             error=None,
@@ -434,5 +434,289 @@ async def process_expense_verification(request: ProcessExpenseVerificationReques
             high_risk_invoices=0,
             html_report="",
             plain_report="",
+            error=str(e),
+        )
+
+
+class VerificationOnlyRequest(BaseModel):
+    """Request for verification WITHOUT category enrichment or policy validation"""
+
+    expense_sheet_id: int
+    odoo_url: str
+    odoo_db: str
+    odoo_username: str
+    odoo_password: str
+
+
+class VerificationOnlyResponse(BaseModel):
+    """Verification results WITHOUT categories or policy validation"""
+
+    success: bool
+    expense_sheet_id: int
+    employee_name: str
+    expense_sheet_name: str
+    total_invoices: int
+    execution_time_seconds: float
+
+    # Raw OCR + validation data (NO categories yet)
+    invoices: List[dict]  # Each invoice has: vendor, amount, OCR results, validation
+
+    # Overall totals
+    calculated_total: float
+    employee_reported_total: float
+    total_matched: bool
+    total_discrepancy: Optional[float]
+
+    # Summary counts
+    amount_mismatches: int
+    high_risk_invoices: int
+
+    # Error info
+    error: Optional[str]
+
+
+@router.post("/verify-expenses-only", response_model=VerificationOnlyResponse)
+async def verify_expenses_only(request: VerificationOnlyRequest):
+    """
+    AGENT 1: Verification ONLY (NO Category Enrichment or Policy Validation)
+
+    This endpoint does STEPS 1-4 ONLY:
+    1. Fetch expense from Odoo
+    2. Extract OCR data
+    3. Validate amounts
+    4. Calculate totals
+
+    STOPS BEFORE:
+    5. Category enrichment <- Agent 2 will do this
+    6. Policy validation <- Agent 3 will do this
+    7. Report generation <- Agent 4 will do this
+
+    AgenticGenie workflow:
+    - Agent 1 calls this endpoint -> gets OCR + amounts
+    - Agent 2 does semantic categorization -> gets enhanced categories
+    - Agent 3 validates policies -> gets violations
+    - Agent 4 generates report -> gets formatted HTML
+    - Agent 5 posts to Odoo -> done
+    """
+
+    start_time = time.time()
+
+    try:
+        set_correlation_id(request.expense_sheet_id)
+
+        logger.info(
+            "Starting verification-only workflow (no enrichment/policies)",
+            expense_sheet_id=request.expense_sheet_id,
+        )
+
+        # ================================================================
+        # STEP 1: FETCH EXPENSE DATA FROM ODOO
+        # ================================================================
+        logger.info("Step 1: Fetching expense data from Odoo")
+
+        fetch_request = OdooExpenseFetchRequest(
+            expense_sheet_id=request.expense_sheet_id,
+            odoo_url=request.odoo_url,
+            odoo_db=request.odoo_db,
+            odoo_username=request.odoo_username,
+            odoo_password=request.odoo_password,
+        )
+
+        expense_data = await fetch_odoo_expense(fetch_request)
+
+        expense_sheet = expense_data.get("expense_sheet", {})
+        expense_lines = expense_data.get("expense_lines", [])
+
+        # Extract metadata
+        employee_info = expense_sheet.get("employee_id", [None, "Unknown"])
+        employee_name = (
+            employee_info[1] if isinstance(employee_info, list) else "Unknown"
+        )
+        expense_name = expense_sheet.get("name", "Unknown")
+        employee_total = expense_sheet.get("total_amount", 0.0)
+        currency = "CHF"
+
+        logger.info(
+            "Expense data fetched",
+            employee=employee_name,
+            total_invoices=len(expense_lines),
+            employee_total=employee_total,
+        )
+
+        if not expense_lines:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No expense lines found for expense sheet {request.expense_sheet_id}",
+            )
+
+        # ================================================================
+        # STEP 2: EXTRACT OCR DATA FOR ALL INVOICES
+        # ================================================================
+        logger.info("Step 2: Extracting OCR data for all invoices")
+
+        ocr_results = []
+
+        for idx, line in enumerate(expense_lines):
+            line_id = line.get("id")
+            claimed_amount = line.get("total_amount", 0.0)
+
+            logger.info(
+                f"Processing invoice {idx + 1}/{len(expense_lines)}",
+                line_id=line_id,
+                claimed_amount=claimed_amount,
+            )
+
+            # Call OCR extraction
+            ocr_request = OdooOCRRequest(
+                expense_line_id=line_id,
+                odoo_url=request.odoo_url,
+                odoo_db=request.odoo_db,
+                odoo_username=request.odoo_username,
+                odoo_password=request.odoo_password,
+            )
+
+            ocr_result = await odoo_ocr(ocr_request)
+            ocr_results.append(
+                {
+                    "ocr_data": ocr_result,
+                    "claimed_amount": claimed_amount,
+                    "invoice_number": idx + 1,
+                }
+            )
+
+        logger.info(f"OCR extraction complete for {len(ocr_results)} invoices")
+
+        # ================================================================
+        # STEP 3: VALIDATE AMOUNTS FOR ALL INVOICES
+        # ================================================================
+        logger.info("Step 3: Validating amounts (hard-coded logic)")
+
+        validation_results = []
+
+        for ocr_data in ocr_results:
+            invoice_num = ocr_data["invoice_number"]
+
+            validation_request = SingleOCRValidationRequest(
+                odoo_output=ocr_data["ocr_data"],
+                employee_claim=ocr_data["claimed_amount"],
+                invoice_id=f"INV-{invoice_num}",
+                currency=currency,
+            )
+
+            validation_result = await validate_ocr(validation_request)
+            validation_results.append(validation_result)
+
+            logger.info(
+                f"Invoice {invoice_num} validated",
+                matched=validation_result.amount_matched,
+                risk_level=validation_result.risk_level,
+            )
+
+        # ================================================================
+        # STEP 4: CALCULATE AND VERIFY TOTAL
+        # ================================================================
+        logger.info("Step 4: Calculating total (pure math)")
+
+        total_request = TotalCalculationRequest(
+            individual_validations=validation_results,
+            employee_reported_total=employee_total,
+            currency=currency,
+        )
+
+        total_validation = await calculate_total(total_request)
+
+        logger.info(
+            "Total calculation complete",
+            calculated=total_validation.calculated_total,
+            reported=total_validation.employee_reported_total,
+            matched=total_validation.matched,
+        )
+
+        # ================================================================
+        # STOP HERE - DO NOT ENRICH CATEGORIES OR VALIDATE POLICIES
+        # ================================================================
+        logger.info(
+            "Verification complete - passing to Agent 2 for category enhancement"
+        )
+
+        # Build invoice results (NO categories yet!)
+        invoice_results = []
+        for idx in range(len(expense_lines)):
+            invoice_results.append(
+                {
+                    "invoice_number": idx + 1,
+                    "invoice_id": f"INV-{idx + 1}",
+                    "vendor": ocr_results[idx]["ocr_data"].vendor,
+                    "date": ocr_results[idx]["ocr_data"].date,
+                    "time": ocr_results[idx]["ocr_data"].time,
+                    "ocr_amount": ocr_results[idx]["ocr_data"].total_amount,
+                    "claimed_amount": ocr_results[idx]["claimed_amount"],
+                    "verified_amount": validation_results[idx].verified_amount,
+                    "amount_matched": validation_results[idx].amount_matched,
+                    "risk_level": validation_results[idx].risk_level,
+                    "discrepancy_message": validation_results[idx].discrepancy_message,
+                    "currency": currency,
+                    # NO category field - Agent 2 will add this
+                    # NO policy validation - Agent 3 will do this
+                }
+            )
+
+        # Calculate summary stats
+        amount_mismatches = sum(1 for v in validation_results if not v.amount_matched)
+        high_risk_count = sum(
+            1 for v in validation_results if v.risk_level in ["HIGH", "CRITICAL"]
+        )
+
+        execution_time = time.time() - start_time
+
+        logger.info(
+            "Verification-only complete (ready for semantic enhancement)",
+            execution_time=f"{execution_time:.2f}s",
+            amount_mismatches=amount_mismatches,
+        )
+
+        return VerificationOnlyResponse(
+            success=True,
+            expense_sheet_id=request.expense_sheet_id,
+            employee_name=employee_name,
+            expense_sheet_name=expense_name,
+            total_invoices=len(expense_lines),
+            execution_time_seconds=round(execution_time, 2),
+            invoices=invoice_results,
+            calculated_total=total_validation.calculated_total,
+            employee_reported_total=total_validation.employee_reported_total,
+            total_matched=total_validation.matched,
+            total_discrepancy=total_validation.discrepancy_amount,
+            amount_mismatches=amount_mismatches,
+            high_risk_invoices=high_risk_count,
+            error=None,
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        execution_time = time.time() - start_time
+
+        logger.error(
+            "Verification-only failed",
+            expense_sheet_id=request.expense_sheet_id,
+            error=str(e),
+            execution_time=f"{execution_time:.2f}s",
+        )
+
+        return VerificationOnlyResponse(
+            success=False,
+            expense_sheet_id=request.expense_sheet_id,
+            employee_name="Unknown",
+            expense_sheet_name="Unknown",
+            total_invoices=0,
+            execution_time_seconds=round(execution_time, 2),
+            invoices=[],
+            calculated_total=0.0,
+            employee_reported_total=0.0,
+            total_matched=False,
+            total_discrepancy=None,
+            amount_mismatches=0,
+            high_risk_invoices=0,
             error=str(e),
         )

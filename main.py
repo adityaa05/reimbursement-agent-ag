@@ -3,7 +3,6 @@ from fastapi.middleware.cors import CORSMiddleware
 
 # Import ALL endpoint routers
 from endpoints.fetchOdooExpense import router as fetch_router
-
 # from endpoints.textractOCR import router as textract_router
 from endpoints.odooOCR import router as odoo_ocr_router
 from endpoints.OCRValidator import router as validator_router
@@ -15,7 +14,7 @@ from endpoints.postOdooComment import router as comment_router
 from endpoints.fetchPolicies import router as fetch_policies_router
 from endpoints.approvalRouter import router as approval_router
 from endpoints.processExpenseRequest import router as process_router
-
+from endpoints.agenticOrchestration import router as agentic_router
 
 app = FastAPI(
     title="Expense Reimbursement API - Phase 1",
@@ -45,7 +44,7 @@ app.include_router(comment_router, tags=["Odoo Integration"])
 app.include_router(fetch_policies_router, tags=["Policy"])
 app.include_router(approval_router, tags=["Workflow"])
 app.include_router(process_router, tags=["Master Endpoint"])
-
+app.include_router(agentic_router, tags=["Agentic Workflow"])
 
 @app.get("/")
 async def root():
@@ -57,7 +56,10 @@ async def root():
         "architecture": "Master Endpoint Pattern",
         "master_endpoint": "/process-expense-request",
         "endpoints": {
-            "master": "/process-expense-request (⭐ USE THIS)",
+            "master": "/process-expense-request (USE THIS)",
+            "agentic_verification": "/verify-expenses-only (Agent 1)",
+            "agentic_policy_validation": "/validate-policies-batch (Agent 3)",
+            "agentic_report_generation": "/generate-report (Agent 4)",
             "fetch": "/fetch-odoo-expense",
             "ocr": "/odoo-ocr",
             "validate_ocr": "/validate-ocr",
@@ -69,7 +71,6 @@ async def root():
             "post_comment": "/post-odoo-comment",
         },
     }
-
 
 @app.get("/health")
 async def health():
