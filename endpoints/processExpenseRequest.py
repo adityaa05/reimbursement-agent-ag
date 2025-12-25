@@ -4,7 +4,7 @@ from typing import List, Optional, Dict, Any
 import time
 from utils.logger import logger, set_correlation_id
 
-# Import all your existing endpoint functions
+# Import all existing endpoint functions
 from endpoints.fetchOdooExpense import fetch_odoo_expense
 from endpoints.odooOCR import odoo_ocr
 from endpoints.OCRValidator import validate_ocr
@@ -12,7 +12,8 @@ from endpoints.calculateTotal import calculate_total
 from endpoints.enrichCategory import enrich_category
 from endpoints.policyValidator import validate_policy
 from endpoints.formatReport import format_report
-from endpoints.postOdooComment import post_odoo_comment
+
+# NOTE: Do NOT import post_odoo_comment
 
 # Import schemas
 from models.schemas import (
@@ -23,14 +24,13 @@ from models.schemas import (
     EnrichCategoryRequest,
     PolicyValidationRequest,
     ReportFormatterRequest,
-    OdooCommentRequest,
 )
 
 router = APIRouter()
 
 
-class ProcessExpenseRequest(BaseModel):
-    """Master request for complete expense verification workflow"""
+class ProcessExpenseVerificationRequest(BaseModel):
+    """Request for verification workflow (no comment posting)"""
 
     expense_sheet_id: int
     odoo_url: str
@@ -58,12 +58,13 @@ class InvoiceVerificationResult(BaseModel):
     policy_violations: List[Dict[str, Any]]
 
 
-class ProcessExpenseResponse(BaseModel):
-    """Complete expense verification result"""
+class ProcessExpenseVerificationResponse(BaseModel):
+    """Complete expense verification result WITHOUT comment posting"""
 
     success: bool
     expense_sheet_id: int
     employee_name: str
+    expense_sheet_name: str  # NEW - needed for comment posting
     total_invoices: int
     execution_time_seconds: float
 
@@ -81,18 +82,20 @@ class ProcessExpenseResponse(BaseModel):
     policy_violations: int
     high_risk_invoices: int
 
-    # Comment posting
-    comment_posted: bool
-    comment_id: Optional[int]
+    # 🔥 NEW: Report data (instead of posting)
+    html_report: str
+    plain_report: str
 
     # Error info (if any)
     error: Optional[str]
 
 
-@router.post("/process-expense-request", response_model=ProcessExpenseResponse)
-async def process_expense_request(request: ProcessExpenseRequest):
+@router.post(
+    "/process-expense-verification", response_model=ProcessExpenseVerificationResponse
+)
+async def process_expense_verification(request: ProcessExpenseVerificationRequest):
     """
-    ⚠️ MASTER ENDPOINT - Complete Expense Verification Workflow
+    ⚠️ VERIFICATION ENDPOINT - Returns Report Data (Does NOT Post to Odoo)
 
     This endpoint orchestrates the ENTIRE expense verification process:
     1. Fetch expense from Odoo
@@ -102,20 +105,22 @@ async def process_expense_request(request: ProcessExpenseRequest):
     5. Enrich categories (Confluence policies)
     6. Validate policy compliance (rule engine)
     7. Format report (template)
-    8. Post comment to Odoo
+    8. 🔥 RETURN report data (instead of posting)
 
-    This is the ONLY endpoint AgenticGenie needs to call.
-    All validation logic is deterministic (NO AI in backend).
+    AgenticGenie workflow:
+    - Agent 1 calls this endpoint → gets verification + report data
+    - Agent 2 calls post_odoo_comment → posts the report
+
+    This separation allows better error handling and modularity.
     """
 
     start_time = time.time()
 
     try:
-        # Set correlation ID for logging
         set_correlation_id(request.expense_sheet_id)
 
         logger.info(
-            "Starting expense verification workflow",
+            "Starting expense verification workflow (no posting)",
             expense_sheet_id=request.expense_sheet_id,
             company_id=request.company_id,
         )
@@ -145,7 +150,7 @@ async def process_expense_request(request: ProcessExpenseRequest):
         )
         expense_name = expense_sheet.get("name", "Unknown")
         employee_total = expense_sheet.get("total_amount", 0.0)
-        currency = "CHF"  # Default
+        currency = "CHF"
 
         logger.info(
             "Expense data fetched",
@@ -300,8 +305,8 @@ async def process_expense_request(request: ProcessExpenseRequest):
                 ),
                 currency=currency,
                 vendor=ocr_results[idx]["ocr_data"].vendor,
-                has_receipt=True,  # Assume receipt attached if invoice exists
-                invoice_age_days=15,  # TODO: Calculate actual age
+                has_receipt=True,
+                invoice_age_days=15,
                 company_id=request.company_id,
             )
 
@@ -334,30 +339,9 @@ async def process_expense_request(request: ProcessExpenseRequest):
         logger.info("Report formatted successfully")
 
         # ================================================================
-        # STEP 8: POST COMMENT TO ODOO
+        # 🔥 STEP 8: RETURN REPORT DATA (DO NOT POST TO ODOO)
         # ================================================================
-        logger.info("Step 8: Posting comment to Odoo")
-
-        comment_request = OdooCommentRequest(
-            expense_sheet_id=request.expense_sheet_id,
-            comment_html=report.html_comment,
-            odoo_url=request.odoo_url,
-            odoo_db=request.odoo_db,
-            odoo_username=request.odoo_username,
-            odoo_password=request.odoo_password,
-        )
-
-        comment_result = await post_odoo_comment(comment_request)
-
-        logger.info(
-            "Comment posted",
-            success=comment_result.success,
-            message_id=comment_result.message_id,
-        )
-
-        # ================================================================
-        # BUILD RESPONSE WITH ALL RESULTS
-        # ================================================================
+        logger.info("Step 8: Returning report data (AgenticGenie will post)")
 
         # Build individual invoice results
         invoice_results = []
@@ -393,16 +377,17 @@ async def process_expense_request(request: ProcessExpenseRequest):
         execution_time = time.time() - start_time
 
         logger.info(
-            "Expense verification complete",
+            "Expense verification complete (report ready for posting)",
             execution_time=f"{execution_time:.2f}s",
             amount_mismatches=amount_mismatches,
             policy_violations=policy_violations_count,
         )
 
-        return ProcessExpenseResponse(
+        return ProcessExpenseVerificationResponse(
             success=True,
             expense_sheet_id=request.expense_sheet_id,
             employee_name=employee_name,
+            expense_sheet_name=expense_name,  # NEW - for comment posting
             total_invoices=len(expense_lines),
             execution_time_seconds=round(execution_time, 2),
             invoices=invoice_results,
@@ -413,8 +398,9 @@ async def process_expense_request(request: ProcessExpenseRequest):
             amount_mismatches=amount_mismatches,
             policy_violations=policy_violations_count,
             high_risk_invoices=high_risk_count,
-            comment_posted=comment_result.success,
-            comment_id=comment_result.message_id,
+            # 🔥 NEW: Return report data instead of posting
+            html_report=report.html_comment,
+            plain_report=report.formatted_comment,
             error=None,
         )
 
@@ -431,10 +417,11 @@ async def process_expense_request(request: ProcessExpenseRequest):
         )
 
         # Return error response
-        return ProcessExpenseResponse(
+        return ProcessExpenseVerificationResponse(
             success=False,
             expense_sheet_id=request.expense_sheet_id,
             employee_name="Unknown",
+            expense_sheet_name="Unknown",
             total_invoices=0,
             execution_time_seconds=round(execution_time, 2),
             invoices=[],
@@ -445,7 +432,7 @@ async def process_expense_request(request: ProcessExpenseRequest):
             amount_mismatches=0,
             policy_violations=0,
             high_risk_invoices=0,
-            comment_posted=False,
-            comment_id=None,
+            html_report="",
+            plain_report="",
             error=str(e),
         )
