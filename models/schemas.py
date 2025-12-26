@@ -211,6 +211,11 @@ class InvoiceWithCategory(BaseModel):
     has_receipt: bool = True
     invoice_age_days: Optional[int] = 15
 
+    # NEW: Safety configuration to allow the AI to be slightly messy
+    class Config:
+        populate_by_name = True
+        extra = "ignore"  # Ignore if AI adds random extra fields like "reasoning"
+
 
 class BatchPolicyValidationRequest(BaseModel):
     expense_sheet_id: int
