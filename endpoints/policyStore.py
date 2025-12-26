@@ -22,7 +22,6 @@ _last_fetch_time: Dict[str, float] = {}
 CACHE_TTL = 3600  # 1 hour
 
 # --- FALLBACK POLICY (Safety Net) ---
-# Used if Confluence is unreachable. Matches your V1.1 Policy + Simplified Meals logic.
 DEFAULT_FALLBACK_POLICY = PolicyData(
     company_id="hashgraph_inc",
     effective_date="2024-01-01",
@@ -108,7 +107,6 @@ def parse_currency(amount_str: str) -> float:
     """Helper to parse currency strings like '50 CHF' or '$50.00'."""
     if not amount_str:
         return 0.0
-    # Remove non-numeric chars except dot
     clean_str = re.sub(r"[^\d.]", "", str(amount_str))
     try:
         return float(clean_str)
@@ -122,14 +120,11 @@ def parse_bool(bool_str: str) -> bool:
 
 
 def fetch_policy_from_confluence(company_id: str) -> PolicyData:
-    """
-    Fetches the policy table from Confluence and converts it to PolicyData.
-    """
+    """Fetches the policy table from Confluence and converts it to PolicyData."""
     logger.info(f"Fetching policy from Confluence for {company_id}")
     client = ConfluenceClient()
 
     try:
-        # 1. Search for the page
         page = client.get_page_by_title(
             CONFLUENCE_SPACE_KEY, CONFLUENCE_POLICY_PAGE_TITLE
         )
@@ -137,16 +132,13 @@ def fetch_policy_from_confluence(company_id: str) -> PolicyData:
             logger.error(f"Policy page '{CONFLUENCE_POLICY_PAGE_TITLE}' not found.")
             raise Exception("Page not found")
 
-        # 2. Get table data
         table_data = client.get_table_data(page["id"])
         if not table_data:
             logger.warning("No table found in policy page.")
             return DEFAULT_FALLBACK_POLICY
 
-        # 3. Map Table Rows to PolicyCategory objects
         categories = []
         for row in table_data:
-            # Robust retrieval using normalized keys if possible
             cat_name = row.get("Category", "Unknown")
             aliases_str = row.get("Aliases", "")
             max_amt_str = row.get("Max Amount", "0")
@@ -155,10 +147,8 @@ def fetch_policy_from_confluence(company_id: str) -> PolicyData:
             attendees_req = row.get("Attendees Required", "No")
             max_age_str = row.get("Max Age Days", "90")
 
-            # Create Aliases List
             aliases = [a.strip() for a in aliases_str.split(",") if a.strip()]
 
-            # Build Rules
             validation_rules = ValidationRules(
                 max_amount=parse_currency(max_amt_str),
                 currency=currency,
@@ -184,21 +174,16 @@ def fetch_policy_from_confluence(company_id: str) -> PolicyData:
 
     except Exception as e:
         logger.error(f"Confluence fetch failed: {e}")
-        raise e  # Re-raise to trigger fallback in get_policy
+        raise e
 
 
 def get_policy(company_id: str = "hashgraph_inc") -> PolicyData:
-    """
-    Retrieves policy with caching logic and robust fallback.
-    """
+    """Retrieves policy with caching logic and robust fallback."""
     now = time.time()
-
-    # 1. Check Cache
     if company_id in _policy_cache:
         if now - _last_fetch_time.get(company_id, 0) < CACHE_TTL:
             return _policy_cache[company_id]
 
-    # 2. Try Fetching Fresh
     try:
         data = fetch_policy_from_confluence(company_id)
         _policy_cache[company_id] = data
@@ -206,33 +191,46 @@ def get_policy(company_id: str = "hashgraph_inc") -> PolicyData:
         return data
     except Exception as e:
         logger.warning(f"Using Fallback Policy due to error: {e}")
-
-        # 3. Fallback: Return Stale Cache OR Hardcoded Default
         if company_id in _policy_cache:
             return _policy_cache[company_id]
-
         return DEFAULT_FALLBACK_POLICY
+
+
+# --- RESTORED HELPER FUNCTIONS (Fixes ImportError in fetchPolicies.py) ---
+
+
+def invalidate_cache(company_id: str):
+    """Manually clear cache for a company."""
+    if company_id in _policy_cache:
+        del _policy_cache[company_id]
+    if company_id in _last_fetch_time:
+        del _last_fetch_time[company_id]
+    logger.info(f"Policy cache invalidated for {company_id}")
+
+
+def get_all_categories(company_id: str) -> List[str]:
+    """Helper to retrieve all category names."""
+    try:
+        policy = get_policy(company_id)
+        return [cat.name for cat in policy.categories]
+    except Exception:
+        return []
 
 
 @router.post("/fetch-policies")
 async def fetch_policies_endpoint(request: PolicyFetchRequest):
-    """
-    Manually trigger a policy fetch/refresh (useful for testing).
-    """
+    """Manually trigger a policy fetch/refresh."""
     try:
-        # Force refresh by clearing cache for this company
-        if request.company_id in _last_fetch_time:
-            del _last_fetch_time[request.company_id]
+        # Force refresh by clearing cache
+        invalidate_cache(request.company_id)
 
         data = get_policy(request.company_id)
 
-        # Filter if requested
         if request.categories:
             filtered_cats = [c for c in data.categories if c.name in request.categories]
             data.categories = filtered_cats
 
         return data
     except Exception as e:
-        # Even manual fetch returns fallback if everything explodes, to keep API alive
         logger.error(f"Manual fetch exploded: {e}")
         return DEFAULT_FALLBACK_POLICY
