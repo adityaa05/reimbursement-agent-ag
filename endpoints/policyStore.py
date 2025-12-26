@@ -1,370 +1,238 @@
 import time
-import json
-from pathlib import Path
-from typing import Dict, List, Any, Optional
-from fastapi import HTTPException
+import re
+from typing import Dict, Any, List, Optional
+from fastapi import APIRouter, HTTPException
 
 from models.schemas import (
     PolicyData,
+    PolicyCategory,
     EnrichmentRules,
     ValidationRules,
-    CategoryDefinition,
+    PolicyFetchRequest,
 )
-from utils.confluence_client import get_confluence_client
+from utils.confluence_client import ConfluenceClient
 from utils.logger import logger
+from config import CONFLUENCE_SPACE_KEY, CONFLUENCE_POLICY_PAGE_TITLE
 
-policy_cache: Dict[str, tuple[PolicyData, float]] = {}
-_last_known_good: Dict[str, PolicyData] = {}
+router = APIRouter()
+
+# In-memory cache
+_policy_cache: Dict[str, PolicyData] = {}
+_last_fetch_time: Dict[str, float] = {}
+CACHE_TTL = 3600  # 1 hour
+
+# --- FALLBACK POLICY (Safety Net) ---
+# Used if Confluence is unreachable. Matches your V1.1 Policy + Simplified Meals logic.
+DEFAULT_FALLBACK_POLICY = PolicyData(
+    company_id="hashgraph_inc",
+    effective_date="2024-01-01",
+    categories=[
+        PolicyCategory(
+            name="Meals",
+            aliases=[
+                "Lunch",
+                "Dinner",
+                "Breakfast",
+                "Food",
+                "Restaurant",
+                "Cafe",
+                "Snacks",
+            ],
+            enrichment_rules=EnrichmentRules(
+                vendor_keywords=["restaurant", "cafe", "food", "dinner", "lunch"]
+            ),
+            validation_rules=ValidationRules(
+                max_amount=50.0, currency="CHF", requires_receipt=True
+            ),
+        ),
+        PolicyCategory(
+            name="Accommodation",
+            aliases=["Hotel", "Airbnb", "Lodging", "Resort", "Motel"],
+            enrichment_rules=EnrichmentRules(
+                vendor_keywords=["hotel", "airbnb", "lodging"]
+            ),
+            validation_rules=ValidationRules(
+                max_amount=200.0, currency="CHF", requires_receipt=True
+            ),
+        ),
+        PolicyCategory(
+            name="Client Entertainment",
+            aliases=["Business Dinner", "Client Lunch", "Hosting", "Representation"],
+            enrichment_rules=EnrichmentRules(vendor_keywords=["client", "hosting"]),
+            validation_rules=ValidationRules(
+                max_amount=300.0,
+                currency="CHF",
+                requires_receipt=True,
+                requires_attendees=True,
+            ),
+        ),
+        PolicyCategory(
+            name="Public Transport",
+            aliases=["Train", "Bus", "Tram", "SBB", "Taxi", "Uber", "Flight"],
+            enrichment_rules=EnrichmentRules(
+                vendor_keywords=["uber", "sbb", "train", "taxi"]
+            ),
+            validation_rules=ValidationRules(
+                max_amount=150.0, currency="CHF", requires_receipt=True
+            ),
+        ),
+        PolicyCategory(
+            name="Parking",
+            aliases=["Garage", "Parking Lot", "Valet"],
+            enrichment_rules=EnrichmentRules(vendor_keywords=["parking", "garage"]),
+            validation_rules=ValidationRules(
+                max_amount=30.0, currency="CHF", requires_receipt=False
+            ),
+        ),
+        PolicyCategory(
+            name="Mileage",
+            aliases=["Personal Car", "Private Vehicle", "Gas"],
+            enrichment_rules=EnrichmentRules(vendor_keywords=["mileage", "gas"]),
+            validation_rules=ValidationRules(
+                max_amount=500.0, currency="CHF", requires_receipt=False
+            ),
+        ),
+        PolicyCategory(
+            name="Gifts",
+            aliases=["Host Gift", "Stay with Friends", "Flowers"],
+            enrichment_rules=EnrichmentRules(vendor_keywords=["gift", "flower"]),
+            validation_rules=ValidationRules(
+                max_amount=60.0, currency="CHF", requires_receipt=True
+            ),
+        ),
+    ],
+)
 
 
-def get_policy(company_id: str, use_fallback: bool = True) -> PolicyData:
-    """Get policy from Confluence with fallback strategy."""
-    cache_key = f"policy_{company_id}"
-    now = time.time()
+def parse_currency(amount_str: str) -> float:
+    """Helper to parse currency strings like '50 CHF' or '$50.00'."""
+    if not amount_str:
+        return 0.0
+    # Remove non-numeric chars except dot
+    clean_str = re.sub(r"[^\d.]", "", str(amount_str))
+    try:
+        return float(clean_str)
+    except ValueError:
+        return 0.0
 
-    if cache_key in policy_cache:
-        cached_data, timestamp = policy_cache[cache_key]
-        age_hours = (now - timestamp) / 3600
 
-        if age_hours < 24:
-            logger.info(
-                "Policy cache hit (fresh)",
-                company_id=company_id,
-                cache_age_hours=round(age_hours, 2),
-            )
-            return cached_data
+def parse_bool(bool_str: str) -> bool:
+    """Helper to parse boolean strings."""
+    return str(bool_str).lower() in ("yes", "true", "1", "required")
+
+
+def fetch_policy_from_confluence(company_id: str) -> PolicyData:
+    """
+    Fetches the policy table from Confluence and converts it to PolicyData.
+    """
+    logger.info(f"Fetching policy from Confluence for {company_id}")
+    client = ConfluenceClient()
 
     try:
-        logger.info("Fetching policy from Confluence", company_id=company_id)
-        client = get_confluence_client()
+        # 1. Search for the page
+        page = client.get_page_by_title(
+            CONFLUENCE_SPACE_KEY, CONFLUENCE_POLICY_PAGE_TITLE
+        )
+        if not page:
+            logger.error(f"Policy page '{CONFLUENCE_POLICY_PAGE_TITLE}' not found.")
+            raise Exception("Page not found")
 
-        index_data = client.get_policy_index()
+        # 2. Get table data
+        table_data = client.get_table_data(page["id"])
+        if not table_data:
+            logger.warning("No table found in policy page.")
+            return DEFAULT_FALLBACK_POLICY
+
+        # 3. Map Table Rows to PolicyCategory objects
         categories = []
+        for row in table_data:
+            # Robust retrieval using normalized keys if possible
+            cat_name = row.get("Category", "Unknown")
+            aliases_str = row.get("Aliases", "")
+            max_amt_str = row.get("Max Amount", "0")
+            currency = row.get("Currency", "CHF")
+            receipt_req = row.get("Receipt Required", "Yes")
+            attendees_req = row.get("Attendees Required", "No")
+            max_age_str = row.get("Max Age Days", "90")
 
-        for policy_row in index_data:
-            category_name = policy_row.get("Category", "").strip()
-            if not category_name:
-                continue
+            # Create Aliases List
+            aliases = [a.strip() for a in aliases_str.split(",") if a.strip()]
 
-            try:
-                details = client.get_category_details(category_name)
-            except Exception as e:
-                logger.warning(
-                    "Could not load category details",
-                    category=category_name,
-                    error=str(e),
-                )
-                continue
-
-            aliases_str = policy_row.get("Aliases", "")
-            aliases = [a.strip() for a in aliases_str.split(",")] if aliases_str else []
-
-            if details.get("aliases"):
-                aliases.extend(details["aliases"])
-            aliases = list(set(aliases))
-
+            # Build Rules
             validation_rules = ValidationRules(
-                max_amount=float(policy_row.get("Max Amount", 0)),
-                currency=policy_row.get("Currency", "CHF"),
-                requires_receipt=(policy_row.get("Receipt Required", "Yes") == "Yes"),
-                requires_attendees=(
-                    policy_row.get("Attendees Required", "No") == "Yes"
-                ),
-                max_age_days=int(policy_row.get("Max Age Days", 90)),
+                max_amount=parse_currency(max_amt_str),
+                currency=currency,
+                requires_receipt=parse_bool(receipt_req),
+                requires_attendees=parse_bool(attendees_req),
+                max_age_days=int(parse_currency(max_age_str)),
+                approved_vendors=[],
             )
 
-            if details.get("validation_rules"):
-                detailed_rules = details["validation_rules"]
-                if "max_amount" in detailed_rules:
-                    validation_rules.max_amount = detailed_rules["max_amount"]
-                if "requires_receipt" in detailed_rules:
-                    validation_rules.requires_receipt = detailed_rules[
-                        "requires_receipt"
-                    ]
-                if "requires_attendees" in detailed_rules:
-                    validation_rules.requires_attendees = detailed_rules[
-                        "requires_attendees"
-                    ]
+            enrichment_rules = EnrichmentRules(vendor_keywords=aliases, time_based=[])
 
-            enrichment_rules = EnrichmentRules(
-                time_based=details.get("enrichment_rules", {}).get("time_based"),
-                vendor_keywords=details.get("enrichment_rules", {}).get(
-                    "vendor_keywords"
-                ),
-            )
-
-            category_def = CategoryDefinition(
-                name=category_name,
+            cat_obj = PolicyCategory(
+                name=cat_name,
                 aliases=aliases,
                 enrichment_rules=enrichment_rules,
                 validation_rules=validation_rules,
             )
+            categories.append(cat_obj)
 
-            categories.append(category_def)
-
-            logger.debug(
-                "Loaded policy category",
-                category=category_name,
-                max_amount=validation_rules.max_amount,
-                vendor_keywords_count=len(enrichment_rules.vendor_keywords or []),
-                time_rules_count=len(enrichment_rules.time_based or []),
-            )
-
-            if enrichment_rules.vendor_keywords:
-                logger.debug(
-                    f"  Keywords for {category_name}",
-                    sample_keywords=enrichment_rules.vendor_keywords[:10],
-                    total_count=len(enrichment_rules.vendor_keywords),
-                )
-            else:
-                logger.warning(
-                    f"WARNING: No vendor keywords defined for {category_name}",
-                    category=category_name,
-                )
-
-        if not any(c.name == "Other" for c in categories):
-            logger.info("Adding 'Other' fallback category (not in Confluence)")
-            categories.append(
-                CategoryDefinition(
-                    name="Other",
-                    aliases=["Miscellaneous", "General", "Uncategorized"],
-                    enrichment_rules=EnrichmentRules(
-                        vendor_keywords=[], time_based=None
-                    ),
-                    validation_rules=ValidationRules(
-                        max_amount=100.0,
-                        currency="CHF",
-                        requires_receipt=True,
-                        requires_attendees=False,
-                        max_age_days=90,
-                    ),
-                )
-            )
-
-        _validate_policy_data(categories)
-
-        policy_data = PolicyData(
-            company_id=company_id,
-            effective_date="2024-01-01",
-            categories=categories,
-            default_category="Other",
-            cache_ttl=86400,
+        return PolicyData(
+            company_id=company_id, effective_date="2024-01-01", categories=categories
         )
 
-        policy_cache[cache_key] = (policy_data, now)
-        _last_known_good[cache_key] = policy_data
-
-        logger.info(
-            "Policy fetched from Confluence",
-            company_id=company_id,
-            categories_count=len(categories),
-        )
-
-        return policy_data
-
-    except Exception as confluence_error:
-        logger.warning(
-            "Confluence fetch failed, attempting fallback",
-            company_id=company_id,
-            error=str(confluence_error),
-        )
-
-        if cache_key in policy_cache:
-            cached_data, timestamp = policy_cache[cache_key]
-            age_hours = (now - timestamp) / 3600
-
-            if age_hours < 168:
-                logger.warning(
-                    "Using STALE cache - Degraded mode",
-                    company_id=company_id,
-                    cache_age_hours=round(age_hours, 2),
-                    degradation_level="MEDIUM",
-                )
-                return cached_data
-
-        if use_fallback and cache_key in _last_known_good:
-            logger.error(
-                "Using LAST-KNOWN-GOOD policy - Critical degradation",
-                company_id=company_id,
-                degradation_level="CRITICAL",
-            )
-            return _last_known_good[cache_key]
-
-        logger.warning(
-            "Confluence unavailable and no cache - using Config-Based Fallback",
-            company_id=company_id,
-            degradation_level="SAFE_MODE",
-        )
-        return _load_fallback_policy_from_config(company_id)
-
-
-def _validate_policy_data(categories: List[CategoryDefinition]):
-    """Validate loaded policy data for completeness."""
-    if not categories:
-        raise ValueError("Policy must contain at least one category")
-
-    has_vendor_keywords = False
-
-    for cat in categories:
-        if not cat.validation_rules:
-            logger.warning(f"Category {cat.name} missing validation rules")
-            continue
-
-        if cat.validation_rules.max_amount <= 0:
-            logger.warning(
-                f"Category {cat.name} has invalid max_amount: {cat.validation_rules.max_amount}"
-            )
-
-        if cat.enrichment_rules.vendor_keywords:
-            has_vendor_keywords = True
-
-            valid_keywords = [
-                k for k in cat.enrichment_rules.vendor_keywords if k.strip()
-            ]
-
-            if len(valid_keywords) < len(cat.enrichment_rules.vendor_keywords):
-                logger.warning(
-                    f"Category {cat.name} has empty vendor keywords",
-                    total=len(cat.enrichment_rules.vendor_keywords),
-                    valid=len(valid_keywords),
-                )
-
-        if cat.enrichment_rules.time_based:
-            for time_rule in cat.enrichment_rules.time_based:
-                if "start_hour" not in time_rule or "end_hour" not in time_rule:
-                    logger.warning(
-                        f"Category {cat.name} has invalid time rule",
-                        rule=time_rule,
-                    )
-
-    if not has_vendor_keywords:
-        logger.warning(
-            "WARNING: NO categories have vendor keywords defined - enrichment will always fail!"
-        )
-
-
-def _load_fallback_policy_from_config(company_id: str) -> PolicyData:
-    """Load fallback policy from config file."""
-    config_path = Path(__file__).parent.parent / "config" / "fallback_policy.json"
-
-    try:
-        logger.info("Loading fallback policy from config", path=str(config_path))
-        if not config_path.exists():
-            logger.error(
-                "Fallback policy config file not found",
-                path=str(config_path),
-            )
-            raise FileNotFoundError(
-                f"Fallback policy config not found: {config_path}\n"
-                f"Create config/fallback_policy.json with policy definitions"
-            )
-
-        with open(config_path) as f:
-            policy_dict = json.load(f)
-
-        categories = []
-        for cat_dict in policy_dict["categories"]:
-            enrichment_dict = cat_dict.get("enrichment_rules", {})
-            enrichment_rules = EnrichmentRules(
-                time_based=enrichment_dict.get("time_based"),
-                vendor_keywords=enrichment_dict.get("vendor_keywords"),
-            )
-
-            validation_dict = cat_dict.get("validation_rules", {})
-            validation_rules = ValidationRules(
-                max_amount=validation_dict.get("max_amount", 100.0),
-                currency=validation_dict.get("currency", "CHF"),
-                requires_receipt=validation_dict.get("requires_receipt", True),
-                requires_attendees=validation_dict.get("requires_attendees", False),
-                max_age_days=validation_dict.get("max_age_days", 90),
-            )
-
-            categories.append(
-                CategoryDefinition(
-                    name=cat_dict["name"],
-                    aliases=cat_dict.get("aliases", []),
-                    enrichment_rules=enrichment_rules,
-                    validation_rules=validation_rules,
-                )
-            )
-
-        policy_data = PolicyData(
-            company_id=company_id,
-            effective_date=policy_dict.get("effective_date", "2024-01-01"),
-            categories=categories,
-            default_category=policy_dict.get("default_category", "Other"),
-            cache_ttl=0,
-        )
-
-        logger.info(
-            "Fallback policy loaded from config",
-            categories_count=len(categories),
-        )
-
-        return policy_data
-
-    except FileNotFoundError:
-        raise
-    except json.JSONDecodeError as e:
-        logger.error("Invalid JSON in fallback policy config", error=str(e))
-        raise ValueError(f"Invalid JSON in {config_path}: {e}")
     except Exception as e:
-        logger.error("Failed to load fallback policy", error=str(e))
-        raise
+        logger.error(f"Confluence fetch failed: {e}")
+        raise e  # Re-raise to trigger fallback in get_policy
 
 
-def invalidate_cache(company_id: Optional[str] = None):
-    """Manually invalidate policy cache."""
-    if company_id:
-        cache_key = f"policy_{company_id}"
-        if cache_key in policy_cache:
-            del policy_cache[cache_key]
-            logger.info("Cache invalidated", company_id=company_id)
-    else:
-        policy_cache.clear()
-        logger.info("All policy cache cleared")
+def get_policy(company_id: str = "hashgraph_inc") -> PolicyData:
+    """
+    Retrieves policy with caching logic and robust fallback.
+    """
+    now = time.time()
 
+    # 1. Check Cache
+    if company_id in _policy_cache:
+        if now - _last_fetch_time.get(company_id, 0) < CACHE_TTL:
+            return _policy_cache[company_id]
 
-def find_category_by_name(
-    policy: PolicyData, category_name: str
-) -> Optional[CategoryDefinition]:
-    """Find category by name or alias with case-insensitive matching."""
-    category_lower = category_name.lower().strip()
-
-    for cat in policy.categories:
-        if cat.name.lower() == category_lower:
-            return cat
-        if any(alias.lower() == category_lower for alias in cat.aliases):
-            return cat
-
-    return None
-
-
-def matches_time_rule(time_str: str, time_rule: Dict[str, Any]) -> bool:
-    """Check if time matches rule."""
+    # 2. Try Fetching Fresh
     try:
-        hour = int(time_str.split(":")[0])
-        return time_rule["start_hour"] <= hour <= time_rule["end_hour"]
-    except:
-        return False
+        data = fetch_policy_from_confluence(company_id)
+        _policy_cache[company_id] = data
+        _last_fetch_time[company_id] = now
+        return data
+    except Exception as e:
+        logger.warning(f"Using Fallback Policy due to error: {e}")
+
+        # 3. Fallback: Return Stale Cache OR Hardcoded Default
+        if company_id in _policy_cache:
+            return _policy_cache[company_id]
+
+        return DEFAULT_FALLBACK_POLICY
 
 
-def matches_vendor_keywords(vendor: str, keywords: List[str]) -> bool:
-    """Check if vendor contains keywords."""
-    if not vendor:
-        return False
-    vendor_lower = vendor.lower()
-    return any(keyword.lower() in vendor_lower for keyword in keywords)
+@router.post("/fetch-policies")
+async def fetch_policies_endpoint(request: PolicyFetchRequest):
+    """
+    Manually trigger a policy fetch/refresh (useful for testing).
+    """
+    try:
+        # Force refresh by clearing cache for this company
+        if request.company_id in _last_fetch_time:
+            del _last_fetch_time[request.company_id]
 
+        data = get_policy(request.company_id)
 
-def get_all_categories(company_id: str) -> List[str]:
-    """Get list of all category names."""
-    policy = get_policy(company_id)
-    return [cat.name for cat in policy.categories]
+        # Filter if requested
+        if request.categories:
+            filtered_cats = [c for c in data.categories if c.name in request.categories]
+            data.categories = filtered_cats
 
-
-def get_category_max_amount(company_id: str, category_name: str) -> Optional[float]:
-    """Quick lookup for max amount."""
-    policy = get_policy(company_id)
-    cat = find_category_by_name(policy, category_name)
-    return cat.validation_rules.max_amount if cat else None
+        return data
+    except Exception as e:
+        # Even manual fetch returns fallback if everything explodes, to keep API alive
+        logger.error(f"Manual fetch exploded: {e}")
+        return DEFAULT_FALLBACK_POLICY
