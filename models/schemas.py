@@ -2,6 +2,7 @@ from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
 
+# --- OCR Models ---
 class OCRRequest(BaseModel):
     image_base64: str
     invoice_id: str
@@ -38,9 +39,8 @@ class OdooOCRResponse(BaseModel):
     source: str = "odoo_ocr"
 
 
+# --- Agent 1: Validation Models ---
 class SingleOCRValidationRequest(BaseModel):
-    """Request for single OCR validation (Odoo only)."""
-
     odoo_output: OdooOCRResponse
     employee_claim: float
     invoice_id: str
@@ -48,8 +48,6 @@ class SingleOCRValidationRequest(BaseModel):
 
 
 class SingleOCRValidationResponse(BaseModel):
-    """Response for single OCR validation."""
-
     invoice_id: str
     odoo_amount: Optional[float] = None
     verified_amount: Optional[float] = None
@@ -76,6 +74,7 @@ class TotalCalculationResponse(BaseModel):
     currency: str
 
 
+# --- Agent 2: Enrichment Models ---
 class EnrichCategoryRequest(BaseModel):
     vendor: Optional[str] = None
     date: Optional[str] = None
@@ -94,22 +93,38 @@ class EnrichCategoryResponse(BaseModel):
     fallback_used: bool
 
 
+# --- NEW: Batch Enrichment for Step 2 Stability ---
+class InvoiceForEnrichment(BaseModel):
+    invoice_id: str
+    vendor: Optional[str] = "Unknown"
+    amount: float
+
+
+class BatchEnrichmentRequest(BaseModel):
+    expense_sheet_id: int
+    company_id: str = "hashgraph_inc"  # Added to allow fetching correct policy
+    invoices: List[InvoiceForEnrichment]
+
+
+class BatchEnrichmentResponse(BaseModel):
+    enriched_invoices: List[Dict[str, Any]]
+
+
+# --- Agent 3: Policy Models ---
 class PolicyFetchRequest(BaseModel):
     company_id: str = "hashgraph_inc"
-    categories: Optional[List[str]] = Field(
-        default=None, description="Optional: Filter specific categories"
-    )
+    categories: Optional[List[str]] = Field(default=None)
 
 
-# FIXED: Added alias and default values to handle Fallback Policy data
+# ✅ FIXED: Alias 'rule_id' to 'rule' to prevent crash
 class PolicyViolation(BaseModel):
-    rule: str = Field(alias="rule_id")  # Maps 'rule_id' from backend to 'rule'
-    message: str = "Policy Violation"  # Default if 'message' is missing
+    rule: str = Field(alias="rule_id")
+    message: str = "Policy Violation"
     severity: str = "ERROR"
 
     class Config:
         populate_by_name = True
-        extra = "ignore"  # Prevents crashing on unexpected fields
+        extra = "ignore"
 
 
 class PolicyValidationRequest(BaseModel):
@@ -130,6 +145,7 @@ class PolicyValidationResponse(BaseModel):
     max_amount: Optional[float] = None
 
 
+# --- Agent 4 & 5: Report Models ---
 class ReportFormatterRequest(BaseModel):
     expense_sheet_id: int
     expense_sheet_name: str
@@ -160,6 +176,7 @@ class OdooCommentResponse(BaseModel):
     error: Optional[str] = None
 
 
+# --- Common/Shared ---
 class OdooExpenseFetchRequest(BaseModel):
     expense_sheet_id: int
     odoo_url: str
@@ -169,15 +186,11 @@ class OdooExpenseFetchRequest(BaseModel):
 
 
 class EnrichmentRules(BaseModel):
-    """Rules for automatic category enrichment."""
-
     time_based: Optional[List[Dict[str, Any]]] = None
     vendor_keywords: Optional[List[str]] = None
 
 
 class ValidationRules(BaseModel):
-    """Rules for policy compliance validation."""
-
     max_amount: float
     currency: str = "CHF"
     requires_receipt: bool = True
@@ -187,8 +200,6 @@ class ValidationRules(BaseModel):
 
 
 class PolicyCategory(BaseModel):
-    """Complete category definition with enrichment and validation rules."""
-
     name: str
     aliases: List[str] = []
     enrichment_rules: EnrichmentRules
@@ -196,8 +207,6 @@ class PolicyCategory(BaseModel):
 
 
 class PolicyData(BaseModel):
-    """Complete policy data structure."""
-
     company_id: str
     effective_date: str
     categories: List[PolicyCategory]
@@ -206,8 +215,6 @@ class PolicyData(BaseModel):
 
 
 class InvoiceWithCategory(BaseModel):
-    """Input for batch policy validation (from Agent 2)."""
-
     invoice_number: int
     category: str
     amount: float
