@@ -1,7 +1,8 @@
 import requests
+import json
 from fastapi import APIRouter, HTTPException
-
 from models.schemas import OdooExpenseFetchRequest
+from utils.logger import logger
 
 router = APIRouter()
 
@@ -23,13 +24,20 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
 
         auth_response = requests.post(auth_url, json=auth_payload)
         auth_result = auth_response.json()
+
         if "error" in auth_result:
-            raise HTTPException(status_code=401, detail="Odoo authentication failed")
+            error_msg = (
+                auth_result["error"].get("data", {}).get("message", "Auth Failed")
+            )
+            logger.error(f"Odoo Auth Error: {json.dumps(auth_result)}")
+            raise HTTPException(
+                status_code=401, detail=f"Odoo Auth Failed: {error_msg}"
+            )
 
         cookies = auth_response.cookies
         read_url = f"{request.odoo_url}/web/dataset/call_kw"
 
-        # 2. Fetch Sheet (Header) - REMOVED 'currency_id' to prevent error
+        # 2. Fetch Sheet (Header)
         read_payload = {
             "jsonrpc": "2.0",
             "method": "call",
@@ -44,7 +52,6 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
                         "state",
                         "total_amount",
                         "expense_line_ids",
-                        # "currency_id"  <-- REMOVED: This was likely causing the crash
                     ]
                 },
             },
@@ -54,21 +61,31 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
         sheet_response = requests.post(read_url, json=read_payload, cookies=cookies)
         sheet_result = sheet_response.json()
 
-        # Safety Check: Did Odoo return an error?
+        # DEBUG: Log the raw response to see why it fails
+        logger.info(f"Odoo Sheet Response: {json.dumps(sheet_result)}")
+
         if "error" in sheet_result:
             error_msg = (
-                sheet_result["error"]
-                .get("data", {})
-                .get("message", "Unknown Odoo Error")
+                sheet_result["error"].get("data", {}).get("message", "Unknown Error")
             )
-            raise HTTPException(
-                status_code=400, detail=f"Odoo Sheet Read Error: {error_msg}"
-            )
+            raise HTTPException(status_code=400, detail=f"Odoo Read Error: {error_msg}")
 
-        sheet_data = sheet_result.get("result", [{}])[0]
+        # SAFETY FIX: Handle empty result list (e.g., ID not found)
+        result_list = sheet_result.get("result", [])
+        if not result_list:
+            logger.warning(
+                f"Expense Sheet {request.expense_sheet_id} not found or empty."
+            )
+            # Return empty structure instead of crashing
+            return {"expense_sheet": {}, "expense_lines": []}
+
+        sheet_data = result_list[0]
         line_ids = sheet_data.get("expense_line_ids", [])
 
-        # 3. Fetch Lines (Details) - KEPT 'unit_amount' and 'currency_id'
+        if not line_ids:
+            return {"expense_sheet": sheet_data, "expense_lines": []}
+
+        # 3. Fetch Lines (Details)
         lines_payload = {
             "jsonrpc": "2.0",
             "method": "call",
@@ -95,15 +112,12 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
         lines_response = requests.post(read_url, json=lines_payload, cookies=cookies)
         lines_result = lines_response.json()
 
-        # Safety Check: Did Odoo return an error for lines?
         if "error" in lines_result:
             error_msg = (
-                lines_result["error"]
-                .get("data", {})
-                .get("message", "Unknown Odoo Error")
+                lines_result["error"].get("data", {}).get("message", "Unknown Error")
             )
             raise HTTPException(
-                status_code=400, detail=f"Odoo Lines Read Error: {error_msg}"
+                status_code=400, detail=f"Odoo Lines Error: {error_msg}"
             )
 
         lines_data = lines_result.get("result", [])
@@ -123,7 +137,6 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
                     },
                     "id": 3,
                 }
-
                 att_response = requests.post(
                     read_url, json=att_payload, cookies=cookies
                 )
@@ -134,6 +147,5 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
     except HTTPException as he:
         raise he
     except Exception as e:
-        raise HTTPException(
-            status_code=500, detail=f"Failed to fetch Odoo data: {str(e)}"
-        )
+        logger.error(f"Fetch Odoo Exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Fetch Failed: {str(e)}")
