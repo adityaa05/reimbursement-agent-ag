@@ -74,12 +74,11 @@ async def health():
     return {"status": "healthy"}
 
 
-from fastapi import FastAPI, status
-from starlette.responses import JSONResponse
+from fastapi import FastAPI
 
 app = FastAPI()
 
 
-@app.get("/empty-json", status_code=status.HTTP_200_OK)
-async def empty_json():
-    return JSONResponse(content={})
+@app.api_route("/empty-json", methods=["GET", "HEAD"])
+async def empty_endpoint():
+    return {}
