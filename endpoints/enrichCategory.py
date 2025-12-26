@@ -14,7 +14,7 @@ router = APIRouter()
 class EnhancedEnrichCategoryRequest(EnrichCategoryRequest):
     """Enhanced request with total_amount for semantic analysis"""
 
-    total_amount: Optional[float] = None  # NEW - for amount-based hints
+    total_amount: Optional[float] = None  
 
 
 @router.post("/enrich-category", response_model=EnrichCategoryResponse)
