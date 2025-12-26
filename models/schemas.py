@@ -181,7 +181,8 @@ class ValidationRules(BaseModel):
     approved_vendors: Optional[List[str]] = None
 
 
-class CategoryDefinition(BaseModel):
+# --- RENAMED TO MATCH UTILS/POLICY_HELPERS.PY ---
+class PolicyCategory(BaseModel):
     """Complete category definition with enrichment and validation rules."""
 
     name: str
@@ -195,7 +196,7 @@ class PolicyData(BaseModel):
 
     company_id: str
     effective_date: str
-    categories: List[CategoryDefinition]
+    categories: List[PolicyCategory]  # Uses PolicyCategory
     default_category: str = "Other"
     cache_ttl: int = 86400
 
