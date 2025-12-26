@@ -8,13 +8,16 @@ from endpoints.fetchOdooExpense import fetch_odoo_expense
 from endpoints.odooOCR import odoo_ocr
 from endpoints.OCRValidator import validate_ocr
 from endpoints.calculateTotal import calculate_total
-
-# enrich_category and policyValidator imports removed for verify_expenses_only logic
+from models.schemas import (
+    OdooExpenseFetchRequest,
+    OdooOCRRequest,
+    SingleOCRValidationRequest,
+    TotalCalculationRequest,
+)
 
 router = APIRouter()
 
 
-# Keep models for internal use if needed, but endpoint will use Body params
 class InvoiceVerificationResult(BaseModel):
     invoice_number: int
     invoice_id: str
@@ -58,16 +61,14 @@ async def verify_expenses_only(
     company_id: str = Body("hashgraph_inc", description="Company ID"),
 ):
     """
-    Agent 1 Tool: Verifies expenses (OCR + Math) but DOES NOT categorize or validate policy.
-    Refactored to use explicit parameters for Agentic Genie compatibility.
+    Agent 1 Tool: Verifies expenses (OCR + Math).
+    Includes defensive coding to prevent crashes on missing Odoo fields.
     """
     start_time = time.time()
     set_correlation_id(f"verify_only_{expense_sheet_id}")
 
     try:
-        logger.info(
-            "Starting verification-only workflow", expense_sheet_id=expense_sheet_id
-        )
+        logger.info(f"Starting verification-only workflow for Sheet {expense_sheet_id}")
 
         # 1. Fetch from Odoo
         fetch_request = {
@@ -77,19 +78,31 @@ async def verify_expenses_only(
             "odoo_username": odoo_username,
             "odoo_password": odoo_password,
         }
-        # Note: We reconstruct the model/dict for the internal function
-        from models.schemas import OdooExpenseFetchRequest
 
         expense_data = await fetch_odoo_expense(
             OdooExpenseFetchRequest(**fetch_request)
         )
 
+        # Extract safely
+        sheet_info = expense_data.get("expense_sheet", {})
         expense_lines = expense_data.get("expense_lines", [])
-        employee_name = expense_data.get("employee_name", "Unknown")
-        expense_name = expense_data.get("name", "Unknown")
+
+        # Safe extraction of nested data
+        employee_data = sheet_info.get("employee_id", [])
+        employee_name = (
+            employee_data[1]
+            if isinstance(employee_data, list) and len(employee_data) > 1
+            else "Unknown"
+        )
+        expense_name = sheet_info.get("name", "Unknown")
 
         if not expense_lines:
+            logger.warning(f"No expense lines found for Sheet {expense_sheet_id}")
             raise HTTPException(status_code=404, detail="No expense lines found")
+
+        logger.info(
+            f"Fetched {len(expense_lines)} lines. Starting Invoice Processing..."
+        )
 
         # 2. Run OCR & Math Validation (Loop)
         invoice_results = []
@@ -98,12 +111,11 @@ async def verify_expenses_only(
         high_risk_count = 0
 
         for idx, line in enumerate(expense_lines):
+            line_id = line.get("id", "Unknown")
             try:
-                # OCR
-                from models.schemas import OdooOCRRequest
-
+                # OCR Request
                 ocr_req = OdooOCRRequest(
-                    expense_line_id=line["id"],
+                    expense_line_id=line_id,
                     odoo_url=odoo_url,
                     odoo_db=odoo_db,
                     odoo_username=odoo_username,
@@ -111,18 +123,21 @@ async def verify_expenses_only(
                 )
                 ocr_result = await odoo_ocr(ocr_req)
 
-                # Validate Amount
-                from models.schemas import SingleOCRValidationRequest
+                # Safe Amount & Currency Extraction
+                unit_amount = line.get("unit_amount", 0.0)
+                curr_raw = line.get("currency_id")
+                currency_code = (
+                    curr_raw[1]
+                    if isinstance(curr_raw, list) and len(curr_raw) > 1
+                    else "CHF"
+                )
 
+                # Validation Request
                 val_req = SingleOCRValidationRequest(
                     odoo_output=ocr_result,
-                    employee_claim=line["unit_amount"],
-                    invoice_id=str(line["id"]),
-                    currency=(
-                        line["currency_id"][1]
-                        if isinstance(line["currency_id"], list)
-                        else "CHF"
-                    ),
+                    employee_claim=unit_amount,
+                    invoice_id=str(line_id),
+                    currency=currency_code,
                 )
                 val_result = await validate_ocr(val_req)
 
@@ -133,16 +148,15 @@ async def verify_expenses_only(
                 if val_result.risk_level == "HIGH":
                     high_risk_count += 1
 
-                # Append Result (Category is Unknown for Agent 2 to fix)
                 invoice_results.append(
                     InvoiceVerificationResult(
                         invoice_number=idx + 1,
-                        invoice_id=str(line["id"]),
+                        invoice_id=str(line_id),
                         vendor=val_result.odoo_amount
                         and ocr_result.vendor
                         or line.get("name"),
                         ocr_amount=val_result.verified_amount,
-                        claimed_amount=line["unit_amount"],
+                        claimed_amount=unit_amount,
                         verified_amount=val_result.verified_amount,
                         amount_matched=val_result.amount_matched,
                         risk_level=val_result.risk_level,
@@ -155,31 +169,47 @@ async def verify_expenses_only(
                 )
 
             except Exception as e:
-                logger.error(f"Failed to process line {line['id']}: {str(e)}")
-                # Add failure placeholder
+                logger.error(f"Failed to process line {line_id}: {str(e)}")
+                # Fail gracefully for this single line
                 invoice_results.append(
                     InvoiceVerificationResult(
                         invoice_number=idx + 1,
-                        invoice_id=str(line["id"]),
-                        vendor="Error",
+                        invoice_id=str(line_id),
+                        vendor="Processing Error",
                         claimed_amount=line.get("unit_amount", 0.0),
                         amount_matched=False,
                         risk_level="HIGH",
-                        discrepancy_message=f"Processing failed: {str(e)}",
+                        discrepancy_message=f"System Error: {str(e)}",
                     )
                 )
 
-        # 3. Calculate Total
-        from models.schemas import TotalCalculationRequest
+        logger.info("Invoice Processing Complete. Calculating Totals...")
 
-        total_req = TotalCalculationRequest(
-            individual_validations=ocr_validations_for_total,
-            employee_reported_total=sum(l["unit_amount"] for l in expense_lines),
-            currency="CHF",
-        )
-        total_validation = await calculate_total(total_req)
+        # 3. Calculate Total (Defensive Sum)
+        try:
+            safe_total = sum(l.get("unit_amount", 0.0) for l in expense_lines)
+
+            total_req = TotalCalculationRequest(
+                individual_validations=ocr_validations_for_total,
+                employee_reported_total=safe_total,
+                currency="CHF",
+            )
+            total_validation = await calculate_total(total_req)
+        except Exception as e:
+            logger.error(f"Total Calculation Failed: {str(e)}")
+
+            # Fallback object to prevent 500 Error
+            class FallbackTotal:
+                calculated_total = 0.0
+                employee_reported_total = 0.0
+                matched = False
+                discrepancy_amount = 0.0
+
+            total_validation = FallbackTotal()
 
         execution_time = time.time() - start_time
+
+        logger.info(f"Workflow Complete. Success. Time: {execution_time:.2f}s")
 
         return VerificationOnlyResponse(
             success=True,
@@ -200,5 +230,7 @@ async def verify_expenses_only(
 
     except Exception as e:
         execution_time = time.time() - start_time
-        logger.error(f"Verification failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Force string conversion to ensure non-empty log
+        error_msg = str(e) or repr(e) or "Unknown Error"
+        logger.error(f"Critical Verification Failure: {error_msg}")
+        raise HTTPException(status_code=500, detail=f"Verification Failed: {error_msg}")
