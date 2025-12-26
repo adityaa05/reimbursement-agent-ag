@@ -1,6 +1,6 @@
 import time
-from typing import List, Optional
-from fastapi import APIRouter
+from typing import List, Optional, Any, Dict
+from fastapi import APIRouter, Body
 from pydantic import BaseModel
 
 from utils.logger import logger
@@ -15,26 +15,8 @@ from endpoints.formatReport import format_report
 
 router = APIRouter()
 
-# --- REMOVED DUPLICATE POLICY BATCH LOGIC ---
-# The /validate-policies-batch endpoint lives in endpoints/policyValidator.py
-# using the strict BatchPolicyValidationRequest schema.
-
-
-class ReportGenerationRequest(BaseModel):
-    """Request for report generation."""
-
-    expense_sheet_id: int
-    expense_sheet_name: str
-    employee_name: str
-    single_ocr_validations: List[dict]
-    total_validation: dict
-    categories: List[str]
-    policy_validations: List[dict]
-
 
 class ReportGenerationResponse(BaseModel):
-    """Response with formatted report."""
-
     success: bool
     html_report: str
     plain_report: str
@@ -43,30 +25,31 @@ class ReportGenerationResponse(BaseModel):
 
 
 @router.post("/generate-report", response_model=ReportGenerationResponse)
-async def generate_report(request: ReportGenerationRequest):
+async def generate_report(
+    expense_sheet_id: int = Body(...),
+    expense_sheet_name: str = Body(...),
+    employee_name: str = Body(...),
+    single_ocr_validations: List[Dict[str, Any]] = Body(...),
+    total_validation: Dict[str, Any] = Body(...),
+    categories: List[str] = Body(...),
+    policy_validations: List[Dict[str, Any]] = Body(...),
+):
     """
-    Agent 4: Report Generation
-    Generates formatted HTML/plain text report from all verification results.
+    Agent 4 Tool: Report Generation.
+    Refactored to accept explicit arguments matching Agentic Genie.
     """
     start_time = time.time()
     try:
-        logger.info(
-            "Generating report",
-            expense_sheet_id=request.expense_sheet_id,
-            total_invoices=len(request.categories),
-        )
+        logger.info("Generating report", expense_sheet_id=expense_sheet_id)
 
-        # Convert dicts back to Pydantic models for the formatter
-        ocr_validations = [
-            SingleOCRValidationResponse(**v) for v in request.single_ocr_validations
-        ]
+        # Reconstruct Models
+        ocr_objs = [SingleOCRValidationResponse(**v) for v in single_ocr_validations]
+        total_obj = TotalCalculationResponse(**total_validation)
 
-        total_validation = TotalCalculationResponse(**request.total_validation)
-
-        policy_validations = []
-        for p in request.policy_validations:
+        policy_objs = []
+        for p in policy_validations:
             violations = [PolicyViolation(**v) for v in p.get("violations", [])]
-            policy_validations.append(
+            policy_objs.append(
                 PolicyValidationResponse(
                     compliant=p["compliant"],
                     violations=violations,
@@ -76,13 +59,13 @@ async def generate_report(request: ReportGenerationRequest):
             )
 
         report_request = ReportFormatterRequest(
-            expense_sheet_id=request.expense_sheet_id,
-            expense_sheet_name=request.expense_sheet_name,
-            employee_name=request.employee_name,
-            single_ocr_validations=ocr_validations,
-            total_validation=total_validation,
-            categories=request.categories,
-            policy_validations=policy_validations,
+            expense_sheet_id=expense_sheet_id,
+            expense_sheet_name=expense_sheet_name,
+            employee_name=employee_name,
+            single_ocr_validations=ocr_objs,
+            total_validation=total_obj,
+            categories=categories,
+            policy_validations=policy_objs,
         )
 
         report = await format_report(report_request)
@@ -97,16 +80,11 @@ async def generate_report(request: ReportGenerationRequest):
         )
 
     except Exception as e:
-        execution_time = time.time() - start_time
-        logger.error(
-            "Report generation failed",
-            expense_sheet_id=request.expense_sheet_id,
-            error=str(e),
-        )
+        logger.error(f"Report generation failed: {e}")
         return ReportGenerationResponse(
             success=False,
             html_report="",
             plain_report="",
-            execution_time_seconds=round(execution_time, 2),
+            execution_time_seconds=0.0,
             error=str(e),
         )

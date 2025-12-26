@@ -1,65 +1,51 @@
-import requests
-from fastapi import APIRouter, HTTPException
-
-from models.schemas import OdooCommentRequest, OdooCommentResponse
+from fastapi import APIRouter, HTTPException, Body
+from models.schemas import OdooCommentResponse
+from utils.logger import logger
+import xmlrpc.client
 
 router = APIRouter()
 
 
 @router.post("/post-odoo-comment", response_model=OdooCommentResponse)
-async def post_odoo_comment(request: OdooCommentRequest):
-    """Post verification comment to Odoo expense sheet."""
+async def post_odoo_comment(
+    expense_sheet_id: int = Body(...),
+    comment_html: str = Body(...),
+    odoo_url: str = Body(...),
+    odoo_db: str = Body(...),
+    odoo_username: str = Body(...),
+    odoo_password: str = Body(...),
+):
+    """
+    Agent 5 Tool: Post comment to Odoo.
+    Refactored to accept explicit arguments.
+    """
     try:
-        auth_url = f"{request.odoo_url}/web/session/authenticate"
-        auth_payload = {
-            "jsonrpc": "2.0",
-            "params": {
-                "db": request.odoo_db,
-                "login": request.odoo_username,
-                "password": request.odoo_password,
+        logger.info(f"Posting comment to Odoo sheet {expense_sheet_id}")
+
+        common = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/common")
+        uid = common.authenticate(odoo_db, odoo_username, odoo_password, {})
+
+        if not uid:
+            raise HTTPException(status_code=401, detail="Odoo Authentication Failed")
+
+        models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
+
+        message_id = models.execute_kw(
+            odoo_db,
+            uid,
+            odoo_password,
+            "hr.expense.sheet",
+            "message_post",
+            [expense_sheet_id],
+            {
+                "body": comment_html,
+                "message_type": "comment",
+                "subtype_xml_id": "mail.mt_note",
             },
-        }
-
-        auth_response = requests.post(auth_url, json=auth_payload)
-        auth_result = auth_response.json()
-        if "error" in auth_result:
-            return OdooCommentResponse(
-                success=False, error=f"Authentication failed: {auth_result['error']}"
-            )
-
-        cookies = auth_response.cookies
-
-        comment_url = f"{request.odoo_url}/web/dataset/call_kw"
-
-        comment_payload = {
-            "jsonrpc": "2.0",
-            "method": "call",
-            "params": {
-                "model": "hr.expense.sheet",
-                "method": "message_post",
-                "args": [request.expense_sheet_id],
-                "kwargs": {
-                    "body": request.comment_html,
-                    "message_type": "comment",
-                    "subtype_xmlid": "mail.mt_comment",
-                },
-            },
-            "id": 1,
-        }
-
-        comment_response = requests.post(
-            comment_url, json=comment_payload, cookies=cookies
         )
 
-        comment_result = comment_response.json()
-        if "error" in comment_result:
-            return OdooCommentResponse(
-                success=False,
-                error=f"Comment posting failed: {comment_result['error']}",
-            )
-
-        message_id = comment_result.get("result")
         return OdooCommentResponse(success=True, message_id=message_id)
 
     except Exception as e:
+        logger.error(f"Failed to post comment: {e}")
         return OdooCommentResponse(success=False, error=str(e))
