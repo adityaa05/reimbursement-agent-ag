@@ -74,11 +74,6 @@ async def health():
     return {"status": "healthy"}
 
 
-from fastapi import FastAPI
-
-app = FastAPI()
-
-
-@app.api_route("/empty-json", methods=["GET", "HEAD"])
+@app.api_route("/empty-json", methods=["GET", "HEAD", "POST", "OPTIONS"])
 async def empty_endpoint():
     return {}
