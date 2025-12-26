@@ -198,3 +198,25 @@ class PolicyData(BaseModel):
     categories: List[CategoryDefinition]
     default_category: str = "Other"
     cache_ttl: int = 86400
+
+
+class InvoiceWithCategory(BaseModel):
+    """Input for batch policy validation (from Agent 2)."""
+
+    invoice_number: int
+    category: str
+    amount: float
+    currency: str = "CHF"
+    vendor: Optional[str] = None
+    has_receipt: bool = True
+    invoice_age_days: Optional[int] = 15
+
+
+class BatchPolicyValidationRequest(BaseModel):
+    expense_sheet_id: int
+    company_id: str = "hashgraph_inc"
+    invoices: List[InvoiceWithCategory]
+
+
+class BatchPolicyValidationResponse(BaseModel):
+    policy_validations: List[PolicyValidationResponse]

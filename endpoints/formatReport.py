@@ -5,7 +5,7 @@ from models.schemas import ReportFormatterRequest, ReportFormatterResponse
 router = APIRouter()
 
 
-@router.post("/format-report", response_model=ReportFormatterResponse)
+@router.post("/generate-report", response_model=ReportFormatterResponse)
 async def format_report(request: ReportFormatterRequest):
     """Generate formatted HTML and plain text verification report."""
     try:
