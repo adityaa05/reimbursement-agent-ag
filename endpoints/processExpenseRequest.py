@@ -62,7 +62,7 @@ async def verify_expenses_only(
 ):
     """
     Agent 1 Tool: Verifies expenses (OCR + Math).
-    Includes defensive coding to prevent crashes on missing Odoo fields.
+    Uses 'total_amount' as the claimed amount since 'unit_amount' is unavailable.
     """
     start_time = time.time()
     set_correlation_id(f"verify_only_{expense_sheet_id}")
@@ -83,11 +83,9 @@ async def verify_expenses_only(
             OdooExpenseFetchRequest(**fetch_request)
         )
 
-        # Extract safely
         sheet_info = expense_data.get("expense_sheet", {})
         expense_lines = expense_data.get("expense_lines", [])
 
-        # Safe extraction of nested data
         employee_data = sheet_info.get("employee_id", [])
         employee_name = (
             employee_data[1]
@@ -123,8 +121,10 @@ async def verify_expenses_only(
                 )
                 ocr_result = await odoo_ocr(ocr_req)
 
-                # Safe Amount & Currency Extraction
-                unit_amount = line.get("unit_amount", 0.0)
+                # Safe Amount Extraction: Use total_amount as fallback
+                # This matches the Odoo fetch change
+                claimed_amount = line.get("total_amount", 0.0)
+
                 curr_raw = line.get("currency_id")
                 currency_code = (
                     curr_raw[1]
@@ -135,7 +135,7 @@ async def verify_expenses_only(
                 # Validation Request
                 val_req = SingleOCRValidationRequest(
                     odoo_output=ocr_result,
-                    employee_claim=unit_amount,
+                    employee_claim=claimed_amount,
                     invoice_id=str(line_id),
                     currency=currency_code,
                 )
@@ -156,7 +156,7 @@ async def verify_expenses_only(
                         and ocr_result.vendor
                         or line.get("name"),
                         ocr_amount=val_result.verified_amount,
-                        claimed_amount=unit_amount,
+                        claimed_amount=claimed_amount,
                         verified_amount=val_result.verified_amount,
                         amount_matched=val_result.amount_matched,
                         risk_level=val_result.risk_level,
@@ -170,13 +170,12 @@ async def verify_expenses_only(
 
             except Exception as e:
                 logger.error(f"Failed to process line {line_id}: {str(e)}")
-                # Fail gracefully for this single line
                 invoice_results.append(
                     InvoiceVerificationResult(
                         invoice_number=idx + 1,
                         invoice_id=str(line_id),
                         vendor="Processing Error",
-                        claimed_amount=line.get("unit_amount", 0.0),
+                        claimed_amount=line.get("total_amount", 0.0),
                         amount_matched=False,
                         risk_level="HIGH",
                         discrepancy_message=f"System Error: {str(e)}",
@@ -185,9 +184,10 @@ async def verify_expenses_only(
 
         logger.info("Invoice Processing Complete. Calculating Totals...")
 
-        # 3. Calculate Total (Defensive Sum)
+        # 3. Calculate Total
         try:
-            safe_total = sum(l.get("unit_amount", 0.0) for l in expense_lines)
+            # Use total_amount here too
+            safe_total = sum(l.get("total_amount", 0.0) for l in expense_lines)
 
             total_req = TotalCalculationRequest(
                 individual_validations=ocr_validations_for_total,
@@ -198,7 +198,6 @@ async def verify_expenses_only(
         except Exception as e:
             logger.error(f"Total Calculation Failed: {str(e)}")
 
-            # Fallback object to prevent 500 Error
             class FallbackTotal:
                 calculated_total = 0.0
                 employee_reported_total = 0.0
@@ -208,8 +207,6 @@ async def verify_expenses_only(
             total_validation = FallbackTotal()
 
         execution_time = time.time() - start_time
-
-        logger.info(f"Workflow Complete. Success. Time: {execution_time:.2f}s")
 
         return VerificationOnlyResponse(
             success=True,
@@ -230,7 +227,5 @@ async def verify_expenses_only(
 
     except Exception as e:
         execution_time = time.time() - start_time
-        # Force string conversion to ensure non-empty log
-        error_msg = str(e) or repr(e) or "Unknown Error"
-        logger.error(f"Critical Verification Failure: {error_msg}")
-        raise HTTPException(status_code=500, detail=f"Verification Failed: {error_msg}")
+        logger.error(f"Critical Verification Failure: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Verification Failed: {str(e)}")

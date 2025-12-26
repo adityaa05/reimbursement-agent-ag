@@ -61,22 +61,17 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
         sheet_response = requests.post(read_url, json=read_payload, cookies=cookies)
         sheet_result = sheet_response.json()
 
-        # DEBUG: Log the raw response to see why it fails
-        logger.info(f"Odoo Sheet Response: {json.dumps(sheet_result)}")
-
         if "error" in sheet_result:
             error_msg = (
                 sheet_result["error"].get("data", {}).get("message", "Unknown Error")
             )
             raise HTTPException(status_code=400, detail=f"Odoo Read Error: {error_msg}")
 
-        # SAFETY FIX: Handle empty result list (e.g., ID not found)
         result_list = sheet_result.get("result", [])
         if not result_list:
             logger.warning(
                 f"Expense Sheet {request.expense_sheet_id} not found or empty."
             )
-            # Return empty structure instead of crashing
             return {"expense_sheet": {}, "expense_lines": []}
 
         sheet_data = result_list[0]
@@ -85,7 +80,7 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
         if not line_ids:
             return {"expense_sheet": sheet_data, "expense_lines": []}
 
-        # 3. Fetch Lines (Details)
+        # 3. Fetch Lines (Details) - REMOVED 'unit_amount'
         lines_payload = {
             "jsonrpc": "2.0",
             "method": "call",
@@ -97,9 +92,8 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
                     "fields": [
                         "name",
                         "product_id",
-                        "total_amount",
-                        "unit_amount",  # Required for Math
-                        "currency_id",  # Required for Currency Check
+                        "total_amount",  # We will use this instead
+                        "currency_id",
                         "date",
                         "attachment_ids",
                         "description",
