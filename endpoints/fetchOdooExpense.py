@@ -65,6 +65,8 @@ async def fetch_odoo_expense(request: OdooExpenseFetchRequest):
                         "name",
                         "product_id",
                         "total_amount",
+                        "unit_amount",
+                        "currency_id",
                         "date",
                         "attachment_ids",
                         "description",
