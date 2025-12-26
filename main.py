@@ -1,9 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-# Import ALL endpoint routers
 from endpoints.fetchOdooExpense import router as fetch_router
-# from endpoints.textractOCR import router as textract_router
 from endpoints.odooOCR import router as odoo_ocr_router
 from endpoints.OCRValidator import router as validator_router
 from endpoints.calculateTotal import router as total_router
@@ -22,7 +20,7 @@ app = FastAPI(
     version="1.0.0",
 )
 
-# CORS middleware
+# CORS Configuration
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -31,9 +29,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Register ALL routers with tags
+# Register endpoint routers
 app.include_router(fetch_router, tags=["Odoo Integration"])
-# app.include_router(textract_router, tags=["OCR"])
 app.include_router(odoo_ocr_router, tags=["OCR"])
 app.include_router(validator_router, tags=["Validation"])
 app.include_router(total_router, tags=["Validation"])
@@ -46,14 +43,13 @@ app.include_router(approval_router, tags=["Workflow"])
 app.include_router(process_router, tags=["Master Endpoint"])
 app.include_router(agentic_router, tags=["Agentic Workflow"])
 
+
 @app.get("/")
 async def root():
     return {
         "status": "running",
         "service": "Expense Reimbursement API",
         "version": "3.0.0",
-        "phase": "Phase 1 - Development",
-        "architecture": "Master Endpoint Pattern",
         "master_endpoint": "/process-expense-request",
         "endpoints": {
             "master": "/process-expense-request (USE THIS)",
@@ -71,6 +67,7 @@ async def root():
             "post_comment": "/post-odoo-comment",
         },
     }
+
 
 @app.get("/health")
 async def health():

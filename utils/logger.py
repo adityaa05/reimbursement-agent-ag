@@ -4,24 +4,24 @@ import time
 from contextvars import ContextVar
 from typing import Optional
 
-# Correlation ID context (thread-safe)
+# Thread-safe correlation ID context
 correlation_id_var: ContextVar[Optional[str]] = ContextVar(
     "correlation_id", default=None
 )
 
 
 class StructuredLogger:
-    """JSON structured logging with correlation IDs"""
+    """JSON structured logging with correlation IDs."""
 
     def __init__(self, name: str):
         self.logger = logging.getLogger(name)
-        self.logger.setLevel(logging.DEBUG)  # Changed from INFO to DEBUG
+        self.logger.setLevel(logging.DEBUG)
         handler = logging.StreamHandler()
         handler.setFormatter(logging.Formatter("%(message)s"))
         self.logger.addHandler(handler)
 
     def _build_log_entry(self, level: str, message: str, **kwargs):
-        """Build structured log entry"""
+        """Build structured log entry."""
         entry = {
             "timestamp": time.time(),
             "level": level,
@@ -32,7 +32,7 @@ class StructuredLogger:
         return json.dumps(entry)
 
     def debug(self, message: str, **kwargs):
-        """Log debug message with context"""
+        """Log debug message with context."""
         self.logger.debug(self._build_log_entry("DEBUG", message, **kwargs))
 
     def info(self, message: str, **kwargs):
@@ -45,17 +45,16 @@ class StructuredLogger:
         self.logger.error(self._build_log_entry("ERROR", message, **kwargs))
 
 
-# Global logger instance
 logger = StructuredLogger("expense_api")
 
 
 def set_correlation_id(expense_sheet_id: int):
-    """Set correlation ID for request tracking"""
+    """Set correlation ID for request tracking."""
     correlation_id_var.set(f"EXP-{expense_sheet_id}")
 
 
 def log_endpoint_call(endpoint: str, inputs: dict, outputs: dict, duration_ms: float):
-    """Log endpoint execution"""
+    """Log endpoint execution."""
     logger.info(
         f"Endpoint executed: {endpoint}",
         endpoint=endpoint,

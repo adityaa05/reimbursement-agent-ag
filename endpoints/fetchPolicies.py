@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
-from typing import Optional
 import time
+from typing import Optional
+from fastapi import APIRouter, HTTPException
+
 from models.schemas import PolicyFetchRequest, PolicyData
 from endpoints.policyStore import get_policy, invalidate_cache, get_all_categories
 
@@ -9,26 +10,10 @@ router = APIRouter()
 
 @router.post("/fetch-policies")
 async def fetch_policies(request: PolicyFetchRequest) -> PolicyData:
-    """
-    Fetch company policies from policy store
-
-    Phase 1: Returns mock data from policy_store.py
-    Phase 2: Will call Confluence API
-
-    This endpoint is cached (24hr TTL) to avoid excessive lookups
-
-    Example request:
-    POST /fetch-policies
-    {
-        "company_id": "hashgraph_inc",
-        "categories": ["Meals", "Travel"]  // Optional filter
-    }
-    """
+    """Fetch company policies from policy store with optional category filtering."""
     try:
-        # Fetch policy (cached)
         policy_data = get_policy(request.company_id)
 
-        # If specific categories requested, filter the response
         if request.categories:
             filtered_categories = [
                 cat
@@ -36,7 +21,7 @@ async def fetch_policies(request: PolicyFetchRequest) -> PolicyData:
                 if cat.name in request.categories
                 or any(alias in request.categories for alias in cat.aliases)
             ]
-            # Create new policy object with filtered categories
+
             policy_data = PolicyData(
                 company_id=policy_data.company_id,
                 effective_date=policy_data.effective_date,
@@ -55,16 +40,7 @@ async def fetch_policies(request: PolicyFetchRequest) -> PolicyData:
 
 @router.post("/invalidate-policy-cache")
 async def invalidate_policy_cache(company_id: Optional[str] = None):
-    """
-    Manually invalidate policy cache
-
-    Useful for:
-    - Testing policy changes
-    - After updating Confluence pages
-    - Debugging
-
-    Example: POST /invalidate-policy-cache?company_id=hashgraph_inc
-    """
+    """Manually invalidate policy cache."""
     invalidate_cache(company_id)
     return {
         "success": True,
@@ -75,10 +51,7 @@ async def invalidate_policy_cache(company_id: Optional[str] = None):
 
 @router.get("/list-categories")
 async def list_categories(company_id: str = "hashgraph_inc"):
-    """
-    Get list of all available categories for a company
-    Useful for dropdowns or validation
-    """
+    """Get list of all available categories for a company."""
     try:
         categories = get_all_categories(company_id)
         return {
@@ -86,6 +59,7 @@ async def list_categories(company_id: str = "hashgraph_inc"):
             "categories": categories,
             "count": len(categories),
         }
+
     except Exception as e:
         raise HTTPException(
             status_code=500, detail=f"Failed to list categories: {str(e)}"

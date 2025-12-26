@@ -1,11 +1,9 @@
+import time
+from typing import List, Optional
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from typing import List, Optional
-import time
+
 from utils.logger import logger
-
-
-# Import schemas
 from models.schemas import (
     PolicyValidationRequest,
     PolicyValidationResponse,
@@ -14,43 +12,42 @@ from models.schemas import (
 from endpoints.policyValidator import validate_policy
 from endpoints.formatReport import format_report
 
-
 router = APIRouter()
 
 
 class PolicyValidationBatchRequest(BaseModel):
-    """Request for batch policy validation"""
+    """Request for batch policy validation."""
 
     expense_sheet_id: int
-    invoices: List[dict]  # List of {invoice_number, category, amount, vendor, ...}
+    invoices: List[dict]
     company_id: str = "hashgraph_inc"
 
 
 class PolicyValidationBatchResponse(BaseModel):
-    """Response with all policy validations"""
+    """Response with all policy validations."""
 
     success: bool
     expense_sheet_id: int
-    policy_validations: List[dict]  # List of PolicyValidationResponse
+    policy_validations: List[dict]
     total_violations: int
     execution_time_seconds: float
     error: Optional[str]
 
 
 class ReportGenerationRequest(BaseModel):
-    """Request for report generation"""
+    """Request for report generation."""
 
     expense_sheet_id: int
     expense_sheet_name: str
     employee_name: str
-    single_ocr_validations: List[dict]  # From Agent 1
-    total_validation: dict  # From Agent 1
-    categories: List[str]  # From Agent 2 (AI enhanced)
-    policy_validations: List[dict]  # From Agent 3
+    single_ocr_validations: List[dict]
+    total_validation: dict
+    categories: List[str]
+    policy_validations: List[dict]
 
 
 class ReportGenerationResponse(BaseModel):
-    """Response with formatted report"""
+    """Response with formatted report."""
 
     success: bool
     html_report: str
@@ -62,17 +59,10 @@ class ReportGenerationResponse(BaseModel):
 @router.post("/validate-policies-batch", response_model=PolicyValidationBatchResponse)
 async def validate_policies_batch(request: PolicyValidationBatchRequest):
     """
-    AGENT 3: Batch Policy Validation
-
-    Takes AI-enhanced categories from Agent 2 and validates ALL invoices
-    against company policies.
-
-    Input: List of invoices with AI-enhanced categories
-    Output: Policy validation results for each invoice
+    Agent 3: Batch Policy Validation
+    Validates all invoices with AI-enhanced categories against company policies.
     """
-
     start_time = time.time()
-
     try:
         logger.info(
             "Starting batch policy validation",
@@ -81,9 +71,7 @@ async def validate_policies_batch(request: PolicyValidationBatchRequest):
         )
 
         policy_validations = []
-
         for invoice in request.invoices:
-            # Build policy validation request
             policy_request = PolicyValidationRequest(
                 category=invoice.get("category"),
                 amount=invoice.get("amount", 0.0),
@@ -94,10 +82,8 @@ async def validate_policies_batch(request: PolicyValidationBatchRequest):
                 company_id=request.company_id,
             )
 
-            # Validate policy
             policy_result = await validate_policy(policy_request)
 
-            # Convert to dict for JSON serialization
             policy_validations.append(
                 {
                     "invoice_number": invoice.get("invoice_number"),
@@ -122,9 +108,7 @@ async def validate_policies_batch(request: PolicyValidationBatchRequest):
                 violations=len(policy_result.violations),
             )
 
-        # Calculate summary
         total_violations = sum(1 for p in policy_validations if not p["compliant"])
-
         execution_time = time.time() - start_time
 
         logger.info(
@@ -145,7 +129,6 @@ async def validate_policies_batch(request: PolicyValidationBatchRequest):
 
     except Exception as e:
         execution_time = time.time() - start_time
-
         logger.error(
             "Batch policy validation failed",
             expense_sheet_id=request.expense_sheet_id,
@@ -165,16 +148,10 @@ async def validate_policies_batch(request: PolicyValidationBatchRequest):
 @router.post("/generate-report", response_model=ReportGenerationResponse)
 async def generate_report(request: ReportGenerationRequest):
     """
-    AGENT 4: Report Generation
-
-    Takes all verification results and generates formatted HTML/plain text report.
-
-    Input: Verification + Categories + Policy results
-    Output: Formatted report ready for posting
+    Agent 4: Report Generation
+    Generates formatted HTML/plain text report from all verification results.
     """
-
     start_time = time.time()
-
     try:
         logger.info(
             "Generating report",
@@ -182,7 +159,6 @@ async def generate_report(request: ReportGenerationRequest):
             total_invoices=len(request.categories),
         )
 
-        # Convert dict inputs back to proper schemas for formatReport
         from models.schemas import (
             SingleOCRValidationResponse,
             TotalCalculationResponse,
@@ -190,7 +166,6 @@ async def generate_report(request: ReportGenerationRequest):
             PolicyViolation,
         )
 
-        # Rebuild validation objects
         ocr_validations = [
             SingleOCRValidationResponse(**v) for v in request.single_ocr_validations
         ]
@@ -209,7 +184,6 @@ async def generate_report(request: ReportGenerationRequest):
                 )
             )
 
-        # Generate report
         report_request = ReportFormatterRequest(
             expense_sheet_id=request.expense_sheet_id,
             expense_sheet_name=request.expense_sheet_name,
@@ -221,7 +195,6 @@ async def generate_report(request: ReportGenerationRequest):
         )
 
         report = await format_report(report_request)
-
         execution_time = time.time() - start_time
 
         logger.info(
@@ -240,7 +213,6 @@ async def generate_report(request: ReportGenerationRequest):
 
     except Exception as e:
         execution_time = time.time() - start_time
-
         logger.error(
             "Report generation failed",
             expense_sheet_id=request.expense_sheet_id,

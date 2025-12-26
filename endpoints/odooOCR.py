@@ -1,6 +1,7 @@
-from fastapi import APIRouter, HTTPException
-import requests
 import re
+import requests
+from fastapi import APIRouter, HTTPException
+
 from models.schemas import OdooOCRRequest, OdooOCRResponse
 
 router = APIRouter()
@@ -8,12 +9,8 @@ router = APIRouter()
 
 @router.post("/odoo-ocr", response_model=OdooOCRResponse)
 async def odoo_ocr(request: OdooOCRRequest):
-    """
-    Extract invoice data using Odoo's built-in OCR
-    FIXED: Proper vendor string cleaning to enable keyword matching
-    """
+    """Extract invoice data using Odoo's built-in OCR."""
     try:
-        # Authenticate with Odoo
         auth_url = f"{request.odoo_url}/web/session/authenticate"
         auth_payload = {
             "jsonrpc": "2.0",
@@ -26,7 +23,6 @@ async def odoo_ocr(request: OdooOCRRequest):
 
         auth_response = requests.post(auth_url, json=auth_payload)
         auth_result = auth_response.json()
-
         if "error" in auth_result:
             raise HTTPException(
                 status_code=401,
@@ -35,7 +31,6 @@ async def odoo_ocr(request: OdooOCRRequest):
 
         cookies = auth_response.cookies
 
-        # Read expense line with OCR fields
         read_url = f"{request.odoo_url}/web/dataset/call_kw"
         read_payload = {
             "jsonrpc": "2.0",
@@ -47,12 +42,12 @@ async def odoo_ocr(request: OdooOCRRequest):
                 "kwargs": {
                     "fields": [
                         "id",
-                        "name",  # Vendor/description (OCR populated)
-                        "total_amount",  # Amount extracted by Odoo OCR
-                        "date",  # Date (OCR populated)
-                        "product_id",  # Category
-                        "currency_id",  # Currency
-                        "description",  # Additional notes
+                        "name",
+                        "total_amount",
+                        "date",
+                        "product_id",
+                        "currency_id",
+                        "description",
                     ]
                 },
             },
@@ -61,7 +56,6 @@ async def odoo_ocr(request: OdooOCRRequest):
 
         line_response = requests.post(read_url, json=read_payload, cookies=cookies)
         line_result = line_response.json()
-
         if "error" in line_result:
             raise HTTPException(
                 status_code=500,
@@ -69,74 +63,50 @@ async def odoo_ocr(request: OdooOCRRequest):
             )
 
         line_data = line_result.get("result", [{}])[0]
-
         if not line_data:
             raise HTTPException(
                 status_code=404,
                 detail=f"Expense line {request.expense_line_id} not found",
             )
 
-        # Extract currency
-        currency = "CHF"  # Default
+        currency = "CHF"
         if line_data.get("currency_id"):
-            # currency_id format: [id, "code"]
             if (
                 isinstance(line_data["currency_id"], list)
                 and len(line_data["currency_id"]) > 1
             ):
                 currency = line_data["currency_id"][1]
 
-        # ================================================================
-        # CRITICAL FIX: Proper vendor name extraction and cleaning
-        # ================================================================
-        # Extract raw vendor components
         name = line_data.get("name", "")
         desc = line_data.get("description", "")
 
-        # Handle Odoo returning False for empty fields
         if isinstance(name, bool):
             name = ""
         if isinstance(desc, bool):
             desc = ""
 
-        # Combine name and description
         vendor_raw = f"{name} {desc}".strip()
 
-        # STEP 1: Remove newlines and carriage returns
         vendor_clean = vendor_raw.replace("\n", " ").replace("\r", " ")
-
-        # STEP 2: Collapse multiple spaces into single space
         vendor_clean = re.sub(r"\s+", " ", vendor_clean)
-
-        # STEP 3: Remove special characters but keep alphanumeric, spaces, hyphens
-        # This removes: >, <, emoji, etc. but keeps: "Münchner Stubn", "Mercure-Hotel"
         vendor_clean = re.sub(r"[^\w\s-]", "", vendor_clean, flags=re.UNICODE)
-
-        # STEP 4: Final cleanup - collapse spaces again and strip
         vendor_clean = re.sub(r"\s+", " ", vendor_clean).strip()
 
         print(f"[ODOO OCR] Vendor extraction:")
         print(f"  Raw: '{vendor_raw[:50]}'")
         print(f"  Cleaned: '{vendor_clean[:50]}'")
 
-        # ================================================================
-        # NOTE: Odoo hr.expense does NOT store individual line items
-        # Line items are only available in account.move (invoices)
-        # For expenses, we only get the total amount
-        # ================================================================
         line_items = []
-
         print(f"[ODOO OCR] Line items not available in hr.expense model")
         print(f"[ODOO OCR] Total amount: {line_data.get('total_amount')} {currency}")
 
-        # Return OCR data (Odoo auto-populates these fields from invoice scan)
         return OdooOCRResponse(
             invoice_id=f"odoo-{line_data['id']}",
-            vendor=vendor_clean,  # Use cleaned vendor name
+            vendor=vendor_clean,
             date=line_data.get("date"),
             total_amount=line_data.get("total_amount"),
             currency=currency,
-            line_items=line_items,  # Empty - hr.expense doesn't store line items
+            line_items=line_items,
             source="odoo_ocr",
         )
 

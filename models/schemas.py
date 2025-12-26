@@ -1,10 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 
-# ============================================
-# OCR SCHEMAS (NO CHANGES NEEDED)
-# ============================================
-
 
 class OCRRequest(BaseModel):
     image_base64: str
@@ -35,51 +31,38 @@ class OdooOCRResponse(BaseModel):
     invoice_id: str
     vendor: Optional[str] = None
     date: Optional[str] = None
-    time: Optional[str] = None  # ✅ Added time field
+    time: Optional[str] = None
     total_amount: Optional[float] = None
     currency: Optional[str] = "CHF"
     line_items: List[Dict[str, Any]] = []
     source: str = "odoo_ocr"
 
 
-# ============================================
-# VALIDATION SCHEMAS (UPDATED FOR SINGLE OCR)
-# ============================================
+class SingleOCRValidationRequest(BaseModel):
+    """Request for single OCR validation (Odoo only)."""
 
-
-class SingleOCRValidationRequest(BaseModel):  # RENAMED from DualOCRValidationRequest
-    """Request for single OCR validation (Odoo only)"""
-
-    odoo_output: OdooOCRResponse  # ✅ Only Odoo OCR
+    odoo_output: OdooOCRResponse
     employee_claim: float
     invoice_id: str
     currency: str = "CHF"
 
 
-class SingleOCRValidationResponse(BaseModel):  # RENAMED from DualOCRValidationResponse
-    """Response for single OCR validation"""
+class SingleOCRValidationResponse(BaseModel):
+    """Response for single OCR validation."""
 
     invoice_id: str
-    # ❌ REMOVED: textract_amount: Optional[float] = None
     odoo_amount: Optional[float] = None
     verified_amount: Optional[float] = None
     employee_reported_amount: float
-    # ❌ REMOVED: ocr_consensus: bool
-    # ❌ REMOVED: ocr_mismatch_message: Optional[str] = None
     amount_matched: bool
     discrepancy_message: Optional[str] = None
     discrepancy_amount: Optional[float] = None
-    risk_level: str  # "LOW", "MEDIUM", "HIGH", "CRITICAL"
+    risk_level: str
     currency: str
 
 
-# ============================================
-# TOTAL CALCULATION (UPDATED REFERENCE)
-# ============================================
-
-
 class TotalCalculationRequest(BaseModel):
-    individual_validations: List[SingleOCRValidationResponse]  # UPDATED type
+    individual_validations: List[SingleOCRValidationResponse]
     employee_reported_total: float
     currency: str = "CHF"
 
@@ -93,16 +76,11 @@ class TotalCalculationResponse(BaseModel):
     currency: str
 
 
-# ============================================
-# ENRICHMENT & POLICY SCHEMAS (NO CHANGES)
-# ============================================
-
-
 class EnrichCategoryRequest(BaseModel):
     vendor: Optional[str] = None
     date: Optional[str] = None
     time: Optional[str] = None
-    total_amount: Optional[float] = None  # NEW - for semantic hints
+    total_amount: Optional[float] = None
     existing_category: Optional[str] = None
     invoice_id: str
     company_id: str = "hashgraph_inc"
@@ -147,11 +125,6 @@ class PolicyValidationResponse(BaseModel):
     max_amount: Optional[float] = None
 
 
-# ============================================
-# REPORTING SCHEMAS (UPDATED REFERENCE)
-# ============================================
-
-
 class ReportFormatterRequest(BaseModel):
     expense_sheet_id: int
     expense_sheet_name: str
@@ -165,11 +138,6 @@ class ReportFormatterRequest(BaseModel):
 class ReportFormatterResponse(BaseModel):
     formatted_comment: str
     html_comment: str
-
-
-# ============================================
-# ODOO INTEGRATION SCHEMAS (NO CHANGES)
-# ============================================
 
 
 class OdooCommentRequest(BaseModel):
@@ -195,20 +163,15 @@ class OdooExpenseFetchRequest(BaseModel):
     odoo_password: str
 
 
-# ============================================
-# POLICY DATA MODELS (NO CHANGES)
-# ============================================
-
-
 class EnrichmentRules(BaseModel):
-    """Rules for automatic category enrichment"""
+    """Rules for automatic category enrichment."""
 
     time_based: Optional[List[Dict[str, Any]]] = None
     vendor_keywords: Optional[List[str]] = None
 
 
 class ValidationRules(BaseModel):
-    """Rules for policy compliance validation"""
+    """Rules for policy compliance validation."""
 
     max_amount: float
     currency: str = "CHF"
@@ -219,7 +182,7 @@ class ValidationRules(BaseModel):
 
 
 class CategoryDefinition(BaseModel):
-    """Complete category definition with enrichment and validation rules"""
+    """Complete category definition with enrichment and validation rules."""
 
     name: str
     aliases: List[str] = []
@@ -228,10 +191,10 @@ class CategoryDefinition(BaseModel):
 
 
 class PolicyData(BaseModel):
-    """Complete policy data structure (represents one Confluence page)"""
+    """Complete policy data structure."""
 
     company_id: str
     effective_date: str
     categories: List[CategoryDefinition]
     default_category: str = "Other"
-    cache_ttl: int = 86400  # 24 hours in seconds
+    cache_ttl: int = 86400

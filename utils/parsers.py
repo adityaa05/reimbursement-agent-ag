@@ -1,5 +1,5 @@
 def parse_amount(amount_str):
-    # Parse amount string to float
+    """Parse currency amount string to float."""
     if not amount_str:
         return None
 

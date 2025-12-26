@@ -1,14 +1,14 @@
+from typing import Optional, List
 from fastapi import APIRouter
 from pydantic import BaseModel
-from typing import Optional, List
 
 router = APIRouter()
 
 
 class ApprovalDecision(BaseModel):
-    """Decision based on risk level and policy compliance"""
+    """Decision based on risk level and policy compliance."""
 
-    action: str  # "AUTO_APPROVE", "APPROVE_WITH_NOTE", "MANAGER_REVIEW", "ESCALATE", "BLOCK"
+    action: str
     reason: str
     risk_level: str
     policy_compliant: bool
@@ -18,29 +18,16 @@ class ApprovalDecision(BaseModel):
 
 class ApprovalRequest(BaseModel):
     expense_sheet_id: int
-    amount_risk_level: str  # From OCRValidator
+    amount_risk_level: str
     policy_violations: List[dict]
     total_matched: bool
 
 
 @router.post("/determine-approval", response_model=ApprovalDecision)
 async def determine_approval(request: ApprovalRequest):
-    """
-    Determines approval action based on amount validation + policy compliance.
-
-    Mapping (WithoutTextractContext.txt:257-263):
-    - MATCH + compliant → AUTO_APPROVE
-    - LOW + compliant → APPROVE_WITH_NOTE
-    - MEDIUM → MANAGER_REVIEW
-    - HIGH → ESCALATE
-    - CRITICAL → BLOCK
-
-    Policy violations override risk level (always escalate).
-    """
-
+    """Determines approval action based on amount validation and policy compliance."""
     has_violations = len(request.policy_violations) > 0
 
-    # Policy violations always escalate
     if has_violations:
         return ApprovalDecision(
             action="ESCALATE",
@@ -52,7 +39,6 @@ async def determine_approval(request: ApprovalRequest):
             + ", ".join([v["message"] for v in request.policy_violations]),
         )
 
-    # Amount-based workflow
     if request.amount_risk_level == "MATCH" and request.total_matched:
         return ApprovalDecision(
             action="AUTO_APPROVE",
@@ -92,7 +78,7 @@ async def determine_approval(request: ApprovalRequest):
             escalation_notes="Investigation required for significant amount difference",
         )
 
-    else:  # CRITICAL
+    else:
         return ApprovalDecision(
             action="BLOCK",
             reason="Critical issue detected - manual investigation required",

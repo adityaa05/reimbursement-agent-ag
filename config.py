@@ -1,15 +1,16 @@
-import boto3
 import os
+import boto3
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# Odoo Configuration
 ODOO_URL = os.getenv("ODOO_URL")
 ODOO_DB = os.getenv("ODOO_DB")
 ODOO_USERNAME = os.getenv("ODOO_USERNAME")
 ODOO_PASSWORD = os.getenv("ODOO_PASSWORD")
 
-# AWS Textract client
+# AWS Textract Client
 textract_client = boto3.client(
     "textract",
     aws_access_key_id=os.getenv("AWS_ACCESS_KEY"),

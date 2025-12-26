@@ -1,8 +1,7 @@
-from fastapi import HTTPException
-from typing import Optional
 import re
+from typing import Optional
+from fastapi import HTTPException
 
-# ISO 4217 currency codes
 VALID_CURRENCIES = {
     "CHF",
     "USD",
@@ -14,16 +13,11 @@ VALID_CURRENCIES = {
     "AUD",
     "CAD",
     "SGD",
-    # ... (all 170+ currencies)
 }
 
 
 def validate_expense_request_id(expense_request_id: Optional[int]) -> int:
-    """
-    Validate expense_request_id is present and valid.
-
-    Per spec: Input validation required for all requests.
-    """
+    """Validate expense_request_id is present and valid."""
     if expense_request_id is None:
         raise HTTPException(
             status_code=400, detail="Missing required field: expense_request_id"
@@ -39,13 +33,8 @@ def validate_expense_request_id(expense_request_id: Optional[int]) -> int:
 
 
 def validate_currency(currency: str) -> str:
-    """
-    Validate and normalize currency code.
-
-    Per spec: Enforce currency normalization.
-    """
+    """Validate and normalize currency code."""
     currency_upper = currency.upper().strip()
-
     if currency_upper not in VALID_CURRENCIES:
         raise HTTPException(
             status_code=400,
@@ -56,13 +45,7 @@ def validate_currency(currency: str) -> str:
 
 
 def normalize_amount(amount: float, currency: str = "CHF") -> float:
-    """
-    Normalize amount with proper rounding.
-
-    Per spec: Standardize rounding and currency handling.
-    - Most currencies: 2 decimal places
-    - Zero-decimal currencies (JPY, KRW): 0 decimal places
-    """
+    """Normalize amount with proper rounding based on currency type."""
     ZERO_DECIMAL_CURRENCIES = {"JPY", "KRW", "VND", "CLP", "ISK"}
 
     if currency in ZERO_DECIMAL_CURRENCIES:
@@ -72,7 +55,7 @@ def normalize_amount(amount: float, currency: str = "CHF") -> float:
 
 
 def validate_amount(amount: Optional[float], field_name: str = "amount") -> float:
-    """Validate amount is positive and reasonable"""
+    """Validate amount is positive and reasonable."""
     if amount is None:
         raise HTTPException(
             status_code=400, detail=f"Missing required field: {field_name}"

@@ -1,26 +1,17 @@
+import time
 from fastapi import APIRouter, HTTPException
+
 from models.schemas import TotalCalculationRequest, TotalCalculationResponse
 from utils.logger import logger, log_endpoint_call
-import time
 
 router = APIRouter()
 
 
 @router.post("/calculate-total", response_model=TotalCalculationResponse)
 async def calculate_total(request: TotalCalculationRequest):
-    """
-    Calculate total with short-circuit on CRITICAL failures.
-
-    Per spec: Avoid redundant processing when OCR fails.
-    Architecture v3.0: Uses SingleOCRValidationResponse objects
-    Pure arithmetic - ZERO AI dependency
-    """
+    """Calculate total with short-circuit on CRITICAL failures."""
     start_time = time.time()
-
     try:
-        # ============================================
-        # SHORT-CIRCUIT: Check for CRITICAL failures first
-        # ============================================
         critical_invoices = [
             v for v in request.individual_validations if v.risk_level == "CRITICAL"
         ]
@@ -41,7 +32,6 @@ async def calculate_total(request: TotalCalculationRequest):
                 currency=request.currency,
             )
 
-            # Log execution
             duration = (time.time() - start_time) * 1000
             log_endpoint_call(
                 endpoint="/calculate-total",
@@ -58,9 +48,6 @@ async def calculate_total(request: TotalCalculationRequest):
 
             return result
 
-        # ============================================
-        # NORMAL CALCULATION: Sum all verified amounts
-        # ============================================
         calculated_total = sum(
             validation.verified_amount
             for validation in request.individual_validations
@@ -69,11 +56,7 @@ async def calculate_total(request: TotalCalculationRequest):
 
         reported_total = request.employee_reported_total
 
-        # ============================================
-        # COMPARE TOTALS (with floating-point tolerance)
-        # ============================================
         tolerance = 0.01
-        # Round to handle floating-point precision issues
         matched = round(abs(calculated_total - reported_total), 2) <= tolerance
 
         if matched:
@@ -85,6 +68,7 @@ async def calculate_total(request: TotalCalculationRequest):
                 discrepancy_message=None,
                 currency=request.currency,
             )
+
         else:
             discrepancy = abs(calculated_total - reported_total)
             result = TotalCalculationResponse(
@@ -96,7 +80,6 @@ async def calculate_total(request: TotalCalculationRequest):
                 currency=request.currency,
             )
 
-        # Log execution
         duration = (time.time() - start_time) * 1000
         log_endpoint_call(
             endpoint="/calculate-total",
@@ -126,6 +109,7 @@ async def calculate_total(request: TotalCalculationRequest):
                 else 0
             ),
         )
+
         raise HTTPException(
             status_code=500, detail=f"Total calculation failed: {str(e)}"
         )
