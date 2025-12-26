@@ -101,10 +101,15 @@ class PolicyFetchRequest(BaseModel):
     )
 
 
+# FIXED: Added alias and default values to handle Fallback Policy data
 class PolicyViolation(BaseModel):
-    rule: str
-    message: str
+    rule: str = Field(alias="rule_id")  # Maps 'rule_id' from backend to 'rule'
+    message: str = "Policy Violation"  # Default if 'message' is missing
     severity: str = "ERROR"
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"  # Prevents crashing on unexpected fields
 
 
 class PolicyValidationRequest(BaseModel):
@@ -181,7 +186,6 @@ class ValidationRules(BaseModel):
     approved_vendors: Optional[List[str]] = None
 
 
-# --- RENAMED TO MATCH UTILS/POLICY_HELPERS.PY ---
 class PolicyCategory(BaseModel):
     """Complete category definition with enrichment and validation rules."""
 
@@ -196,7 +200,7 @@ class PolicyData(BaseModel):
 
     company_id: str
     effective_date: str
-    categories: List[PolicyCategory]  # Uses PolicyCategory
+    categories: List[PolicyCategory]
     default_category: str = "Other"
     cache_ttl: int = 86400
 
@@ -212,10 +216,9 @@ class InvoiceWithCategory(BaseModel):
     has_receipt: bool = True
     invoice_age_days: Optional[int] = 15
 
-    # NEW: Safety configuration to allow the AI to be slightly messy
     class Config:
         populate_by_name = True
-        extra = "ignore"  # Ignore if AI adds random extra fields like "reasoning"
+        extra = "ignore"
 
 
 class BatchPolicyValidationRequest(BaseModel):
