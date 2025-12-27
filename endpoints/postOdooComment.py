@@ -17,7 +17,7 @@ async def post_odoo_comment(
 ):
     """
     Agent 5 Tool: Post comment to Odoo.
-    FIXED: Uses 'subtype_id' to force HTML rendering without 'content_subtype'.
+    FIX: Uses 'subtype_xmlid' (correct spelling) to force HTML rendering.
     """
     try:
         logger.info(f"Posting comment to Odoo sheet {expense_sheet_id}")
@@ -30,40 +30,8 @@ async def post_odoo_comment(
 
         models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
 
-        # 1. Fetch the correct Subtype ID for "Discussions" (HTML enabled)
-        # We use 'xmlid_to_res_id' which is safer than searching by name "Discussions"
-        try:
-            subtype_id = models.execute_kw(
-                odoo_db,
-                uid,
-                odoo_password,
-                "ir.model.data",
-                "xmlid_to_res_id",
-                ["mail.mt_comment"],
-            )
-        except Exception:
-            # Fallback: If XML ID fails, search by name (English)
-            subtype_search = models.execute_kw(
-                odoo_db,
-                uid,
-                odoo_password,
-                "mail.message.subtype",
-                "search",
-                [[("name", "=", "Discussions")]],
-                {"limit": 1},
-            )
-            subtype_id = subtype_search[0] if subtype_search else False
-
-        # 2. Post the Message
-        post_values = {
-            "body": comment_html,
-            "message_type": "comment",
-        }
-
-        # Only add subtype_id if we successfully found it
-        if subtype_id:
-            post_values["subtype_id"] = subtype_id
-
+        # ✅ CRITICAL FIX: Use 'subtype_xmlid' (joined, no underscore before 'id')
+        # 'mail.mt_comment' is the standard "Discussions" type that enables HTML.
         message_id = models.execute_kw(
             odoo_db,
             uid,
@@ -71,7 +39,11 @@ async def post_odoo_comment(
             "hr.expense.sheet",
             "message_post",
             [expense_sheet_id],
-            post_values,
+            {
+                "body": comment_html,
+                "message_type": "comment",
+                "subtype_xmlid": "mail.mt_comment",
+            },
         )
 
         logger.info(f"Successfully posted comment. Message ID: {message_id}")
