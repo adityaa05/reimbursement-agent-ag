@@ -13,16 +13,15 @@ router = APIRouter()
 async def generate_report(request: ReportFormatterRequest = Body(...)):
     """
     Generates a PRD-Compliant Text Report for Odoo.
-    Format matches: 'Hi Manager, Please find below findings...'
+    Format: 'Hi Manager, Please find below findings...'
     """
     try:
-        logger.info(f"Generating PRD Report for Sheet {request.expense_sheet_id}")
+        logger.info(
+            f"Generating Detailed PRD Report for Sheet {request.expense_sheet_id}"
+        )
 
         # --- 1. Auto-Calculate Totals (Safety Net) ---
         if not request.total_validation:
-            logger.warning(
-                "Agent 4 input missing 'total_validation'. Calculating internally."
-            )
             calc_total = sum(
                 i.verified_amount or 0.0 for i in request.single_ocr_validations
             )
@@ -40,7 +39,7 @@ async def generate_report(request: ReportFormatterRequest = Body(...)):
             )
         totals = request.total_validation
 
-        # --- 2. Build 'OCR Verification' Section ---
+        # --- 2. OCR Verification Section ---
         ocr_lines = []
         amount_mismatch_count = 0
 
@@ -49,7 +48,6 @@ async def generate_report(request: ReportFormatterRequest = Body(...)):
                 ocr_lines.append(f"Invoice {idx}: No issue found")
             else:
                 amount_mismatch_count += 1
-                # Format: "Value in invoice as per AG is X, not Y as reported"
                 ag_val = (
                     f"{invoice.verified_amount:.2f}"
                     if invoice.verified_amount is not None
@@ -60,36 +58,32 @@ async def generate_report(request: ReportFormatterRequest = Body(...)):
                     f"Invoice {idx}: Value in invoice as per AG is {ag_val}, not {rep_val} as reported"
                 )
 
-        # Total Line
         if totals.matched:
             total_line = f"Total: Matches reported amount ({totals.currency} {totals.calculated_total:.2f})"
         else:
             diff = abs(totals.discrepancy_amount or 0.0)
             total_line = f"Total: Total is incorrect by {diff:.2f} {totals.currency}, should be {totals.calculated_total:.2f} {totals.currency}"
 
-        # --- 3. Build 'Policy Report' Section ---
+        # --- 3. Policy Report Section ---
         policy_lines = []
         policy_violation_count = 0
-
-        # Ensure policy list matches invoice list size
         policies = request.policy_validations or []
 
-        # Iterate through invoices (using index) to match PRD format "Invoice 1...", "Invoice 2..."
         for idx in range(1, len(request.single_ocr_validations) + 1):
-            # Check if we have a corresponding policy result
             if idx <= len(policies):
                 res = policies[idx - 1]
                 if res.compliant:
                     policy_lines.append(f"Invoice {idx}: Compliant to policy")
                 else:
                     policy_violation_count += 1
-                    # Combine all violation messages for this invoice
+                    # Join multiple violations with a newline and indent for readability if needed,
+                    # but PRD uses simple lines. We will use the detailed message we just built in Agent 3.
                     reasons = "; ".join([v.message for v in res.violations])
                     policy_lines.append(f"Invoice {idx}: {reasons}")
             else:
                 policy_lines.append(f"Invoice {idx}: No policy check performed")
 
-        # --- 4. Build 'Overall Summary' ---
+        # --- 4. Overall Summary ---
         summary_parts = []
         if amount_mismatch_count > 0:
             summary_parts.append(
@@ -106,12 +100,12 @@ async def generate_report(request: ReportFormatterRequest = Body(...)):
         else:
             summary_text = " while ".join(summary_parts) + "."
 
-        # --- 5. Assemble Final Report String ---
+        # --- 5. Final Assembly ---
         final_report = (
             f"Hi Manager,\n"
             f"Please find below findings\n\n"
             f"OCR Verification:\n"
-            f"{chr(10).join(ocr_lines)}\n"  # chr(10) is newline
+            f"{chr(10).join(ocr_lines)}\n"
             f"{total_line}\n\n"
             f"Policy Report:\n"
             f"{chr(10).join(policy_lines)}\n\n"
@@ -119,12 +113,11 @@ async def generate_report(request: ReportFormatterRequest = Body(...)):
         )
 
         return ReportFormatterResponse(
-            formatted_comment=final_report,
-            html_comment=final_report,  # Send as text so Odoo renders newlines correctly
+            formatted_comment=final_report, html_comment=final_report
         )
 
     except Exception as e:
         logger.error(f"Report generation failed: {str(e)}")
         return ReportFormatterResponse(
-            formatted_comment="Error", html_comment=f"Error generating report: {str(e)}"
+            formatted_comment="Error", html_comment=f"Error: {str(e)}"
         )
