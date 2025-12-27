@@ -15,7 +15,7 @@ from config import (
 
 router = APIRouter()
 
-# UPDATED: Exact Titles from your diagnostic script
+# CORRECT TITLES (Derived from your list_pages.py output)
 KEYWORD_PAGE_TITLE = "Vendor Keywords Master List"
 MAIN_POLICY_TITLE = "Policy API Index - Machine Readable"
 
