@@ -1,6 +1,6 @@
 import time
 from typing import Optional
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter
 
 from utils.confluence_client import ConfluenceClient
 from utils.parsers import parse_policy_html, parse_keyword_master_list
@@ -15,15 +15,14 @@ from config import (
 
 router = APIRouter()
 
-# Name of your Keyword Page (Must match Confluence exactly)
+# UPDATED: Exact Titles from your diagnostic script
 KEYWORD_PAGE_TITLE = "Vendor Keywords Master List"
-MAIN_POLICY_TITLE = "Travel & Expense Policy"
+MAIN_POLICY_TITLE = "Policy API Index - Machine Readable"
 
 
 def get_policy_from_confluence(company_id: str) -> Optional[PolicyData]:
     """
     Fetches Policy Rules AND Vendor Keywords independently.
-    If one page is missing, it logs a warning but keeps going.
     """
     client = ConfluenceClient(
         url=CONFLUENCE_URL, username=CONFLUENCE_USERNAME, api_token=CONFLUENCE_API_TOKEN
@@ -31,7 +30,7 @@ def get_policy_from_confluence(company_id: str) -> Optional[PolicyData]:
 
     categories = []
 
-    # --- ATTEMPT 1: Fetch Main Policy (Rules & Limits) ---
+    # --- ATTEMPT 1: Fetch Main Policy (Rules) ---
     try:
         logger.info(f"Attempting to fetch Main Policy: '{MAIN_POLICY_TITLE}'")
         main_page = client.get_page_content(
@@ -49,7 +48,7 @@ def get_policy_from_confluence(company_id: str) -> Optional[PolicyData]:
             f"Could not fetch Main Policy '{MAIN_POLICY_TITLE}'. Continuing... Error: {e}"
         )
 
-    # Fallback: If Main Policy failed/empty, create default buckets so Keywords have somewhere to go
+    # Fallback buckets if Main Policy failed
     if not categories:
         logger.info(
             "Initializing default category buckets (Main Policy was missing/failed)."
@@ -80,16 +79,16 @@ def get_policy_from_confluence(company_id: str) -> Optional[PolicyData]:
                 validation_rules=ValidationRules(max_amount=50.0),
             ),
             PolicyCategory(
-                name="Office Supplies",
-                aliases=[],
-                enrichment_rules=EnrichmentRules(),
-                validation_rules=ValidationRules(max_amount=50.0),
-            ),
-            PolicyCategory(
                 name="Client Entertainment",
                 aliases=[],
                 enrichment_rules=EnrichmentRules(),
                 validation_rules=ValidationRules(max_amount=100.0),
+            ),
+            PolicyCategory(
+                name="Office Supplies",
+                aliases=[],
+                enrichment_rules=EnrichmentRules(),
+                validation_rules=ValidationRules(max_amount=50.0),
             ),
             PolicyCategory(
                 name="Other",
@@ -99,7 +98,7 @@ def get_policy_from_confluence(company_id: str) -> Optional[PolicyData]:
             ),
         ]
 
-    # --- ATTEMPT 2: Fetch Keyword Master List (Enrichment) ---
+    # --- ATTEMPT 2: Fetch Keyword List (Enrichment) ---
     try:
         logger.info(f"Attempting to fetch Keyword List: '{KEYWORD_PAGE_TITLE}'")
         keyword_page = client.get_page_content(
@@ -107,7 +106,6 @@ def get_policy_from_confluence(company_id: str) -> Optional[PolicyData]:
         )
 
         if keyword_page:
-            # Pass the categories list (whether from Main Policy or Defaults) to be enriched
             categories = parse_keyword_master_list(keyword_page, categories)
             logger.info(
                 f"Successfully enriched categories with keywords from '{KEYWORD_PAGE_TITLE}'."
