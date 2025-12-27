@@ -11,7 +11,10 @@ from models.schemas import (
     PolicyValidationResponse,
     PolicyViolation,
 )
-from endpoints.formatReport import format_report
+
+# ✅ CRITICAL FIX: Import 'generate_report' but alias it to 'format_report'
+# This matches the actual function name in formatReport.py while keeping your code logic intact.
+from endpoints.formatReport import generate_report as format_report
 
 router = APIRouter()
 
@@ -30,9 +33,10 @@ async def generate_report(
     expense_sheet_name: str = Body(...),
     employee_name: str = Body(...),
     single_ocr_validations: List[Dict[str, Any]] = Body(...),
-    total_validation: Dict[str, Any] = Body(...),
+    # Made optional to handle cases where Agent 4 misses it (handled by format_report logic)
+    total_validation: Optional[Dict[str, Any]] = Body(None),
     categories: List[str] = Body(...),
-    policy_validations: List[Dict[str, Any]] = Body(...),
+    policy_validations: Optional[List[Dict[str, Any]]] = Body(None),
 ):
     """
     Agent 4 Tool: Report Generation.
@@ -40,23 +44,29 @@ async def generate_report(
     """
     start_time = time.time()
     try:
-        logger.info("Generating report", expense_sheet_id=expense_sheet_id)
+        logger.info(f"Generating report for expense_sheet_id={expense_sheet_id}")
 
         # Reconstruct Models
         ocr_objs = [SingleOCRValidationResponse(**v) for v in single_ocr_validations]
-        total_obj = TotalCalculationResponse(**total_validation)
 
+        # Handle optional total_validation
+        total_obj = None
+        if total_validation:
+            total_obj = TotalCalculationResponse(**total_validation)
+
+        # Handle optional policy_validations
         policy_objs = []
-        for p in policy_validations:
-            violations = [PolicyViolation(**v) for v in p.get("violations", [])]
-            policy_objs.append(
-                PolicyValidationResponse(
-                    compliant=p["compliant"],
-                    violations=violations,
-                    category_found=p["category_found"],
-                    max_amount=p.get("max_amount"),
+        if policy_validations:
+            for p in policy_validations:
+                violations = [PolicyViolation(**v) for v in p.get("violations", [])]
+                policy_objs.append(
+                    PolicyValidationResponse(
+                        compliant=p["compliant"],
+                        violations=violations,
+                        category_found=p["category_found"],
+                        max_amount=p.get("max_amount"),
+                    )
                 )
-            )
 
         report_request = ReportFormatterRequest(
             expense_sheet_id=expense_sheet_id,
@@ -68,6 +78,7 @@ async def generate_report(
             policy_validations=policy_objs,
         )
 
+        # Call the logic from formatReport.py
         report = await format_report(report_request)
         execution_time = time.time() - start_time
 
