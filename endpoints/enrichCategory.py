@@ -12,17 +12,18 @@ router = APIRouter()
 async def enrich_categories_batch(request: BatchEnrichmentRequest = Body(...)):
     """
     Agent 2 Tool: Hybrid Categorization.
-
-    Priority 1: Strict Keyword Match from Policy (Dynamic).
-    Priority 2: Agent 2's Semantic Suggestion (for edge cases).
-    Priority 3: Default/Unknown.
+    Forces company_id to 'hashgraph_inc' to prevent Agent errors.
     """
     try:
+        # FIX: Hardcode the correct Company ID to prevent Agent 2 from sending the DB name
+        safe_company_id = "hashgraph_inc"
+
         logger.info(
-            f"Categorizing {len(request.invoices)} invoices for Sheet {request.expense_sheet_id}"
+            f"Categorizing {len(request.invoices)} invoices for Sheet {request.expense_sheet_id} (Company: {safe_company_id})"
         )
 
-        policy_data = get_policy(request.company_id or "hashgraph_inc")
+        # Fetch policy using the SAFE ID
+        policy_data = get_policy(safe_company_id)
         enriched_results = []
 
         for inv in request.invoices:
@@ -40,17 +41,13 @@ async def enrich_categories_batch(request: BatchEnrichmentRequest = Body(...)):
                         break
 
             # 2. Semantic Fallback (Edge Cases)
-            # If keywords failed, check if Agent 2 provided a valid suggestion
             if assigned_category == "Unknown" and inv.ai_suggested_category:
-                # Verify the suggestion exists in our Policy
                 found_cat = find_category_by_name(
                     policy_data, inv.ai_suggested_category
                 )
                 if found_cat:
                     assigned_category = found_cat.name
-                    confidence_score = (
-                        0.80  # AI is slightly less confident than strict keywords
-                    )
+                    confidence_score = 0.80
                     logger.info(
                         f"Using AI suggestion '{assigned_category}' for vendor '{inv.vendor}'"
                     )
