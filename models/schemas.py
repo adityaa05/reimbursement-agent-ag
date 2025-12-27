@@ -93,16 +93,18 @@ class EnrichCategoryResponse(BaseModel):
     fallback_used: bool
 
 
-# --- NEW: Batch Enrichment for Step 2 Stability ---
+# --- NEW: Hybrid Input Model ---
 class InvoiceForEnrichment(BaseModel):
     invoice_id: str
     vendor: Optional[str] = "Unknown"
     amount: float
+    # The AI's semantic guess (for edge cases)
+    ai_suggested_category: Optional[str] = None
 
 
 class BatchEnrichmentRequest(BaseModel):
     expense_sheet_id: int
-    company_id: str = "hashgraph_inc"  # Added to allow fetching correct policy
+    company_id: str = "hashgraph_inc"
     invoices: List[InvoiceForEnrichment]
 
 
@@ -116,7 +118,6 @@ class PolicyFetchRequest(BaseModel):
     categories: Optional[List[str]] = Field(default=None)
 
 
-# ✅ FIXED: Alias 'rule_id' to 'rule' to prevent crash
 class PolicyViolation(BaseModel):
     rule: str = Field(alias="rule_id")
     message: str = "Policy Violation"
