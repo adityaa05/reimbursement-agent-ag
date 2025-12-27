@@ -17,7 +17,7 @@ async def post_odoo_comment(
 ):
     """
     Agent 5 Tool: Post comment to Odoo.
-    FIX: Removed 'subtype_xml_id' to prevent Odoo API crash.
+    CRITICAL FIX: Removed ALL unsupported parameters (content_subtype, subtype_xmlid).
     """
     try:
         logger.info(f"Posting comment to Odoo sheet {expense_sheet_id}")
@@ -30,7 +30,7 @@ async def post_odoo_comment(
 
         models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
 
-        # FIX: Removed 'subtype_xml_id'. Only use supported fields.
+        # ✅ CRITICAL FIX: Only use the MINIMAL supported parameters
         message_id = models.execute_kw(
             odoo_db,
             uid,
@@ -41,7 +41,8 @@ async def post_odoo_comment(
             {
                 "body": comment_html,
                 "message_type": "comment",
-                "content_subtype": "html",  # Ensures HTML rendering
+                # ❌ REMOVED: "content_subtype": "html" (NOT SUPPORTED)
+                # ❌ REMOVED: "subtype_xmlid" (NOT SUPPORTED)
             },
         )
 
