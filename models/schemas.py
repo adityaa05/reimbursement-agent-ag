@@ -49,14 +49,19 @@ class SingleOCRValidationRequest(BaseModel):
 
 class SingleOCRValidationResponse(BaseModel):
     invoice_id: str
-    odoo_amount: Optional[float] = None
+    # Aliases allow Agent 1's output keys to map directly here
+    odoo_amount: Optional[float] = Field(default=None, alias="ocr_amount")
     verified_amount: Optional[float] = None
-    employee_reported_amount: float
+    employee_reported_amount: float = Field(alias="claimed_amount")  # <--- CRITICAL FIX
     amount_matched: bool
     discrepancy_message: Optional[str] = None
     discrepancy_amount: Optional[float] = None
     risk_level: str
-    currency: str
+    currency: str = "CHF"  # Default prevents crash if missing
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
 
 
 class TotalCalculationRequest(BaseModel):
@@ -68,10 +73,14 @@ class TotalCalculationRequest(BaseModel):
 class TotalCalculationResponse(BaseModel):
     calculated_total: float
     employee_reported_total: float
-    matched: bool
-    discrepancy_amount: Optional[float] = None
+    matched: bool = Field(alias="total_matched")  # <--- CRITICAL FIX
+    discrepancy_amount: Optional[float] = Field(default=None, alias="total_discrepancy")
     discrepancy_message: Optional[str] = None
-    currency: str
+    currency: str = "CHF"
+
+    class Config:
+        populate_by_name = True
+        extra = "ignore"
 
 
 # --- Agent 2: Enrichment Models ---
@@ -93,12 +102,11 @@ class EnrichCategoryResponse(BaseModel):
     fallback_used: bool
 
 
-# --- NEW: Hybrid Input Model ---
+# --- Hybrid Input Model ---
 class InvoiceForEnrichment(BaseModel):
     invoice_id: str
     vendor: Optional[str] = "Unknown"
     amount: float
-    # The AI's semantic guess (for edge cases)
     ai_suggested_category: Optional[str] = None
 
 
