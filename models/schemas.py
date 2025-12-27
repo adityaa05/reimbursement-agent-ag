@@ -153,12 +153,13 @@ class PolicyValidationResponse(BaseModel):
     max_amount: Optional[float] = None
 
 
+# --- Agent 4 & 5: Report Models ---
+# FIX: Uncommented class definition
 class ReportFormatterRequest(BaseModel):
     expense_sheet_id: int
     expense_sheet_name: str
     employee_name: str
     single_ocr_validations: List[SingleOCRValidationResponse]
-    # FIX: Made optional so backend can calculate it if Agent 4 forgets
     total_validation: Optional[TotalCalculationResponse] = None
     categories: Optional[List[str]] = None
     policy_validations: Optional[List[PolicyValidationResponse]] = None
