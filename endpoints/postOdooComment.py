@@ -1,7 +1,7 @@
+import xmlrpc.client
 from fastapi import APIRouter, HTTPException, Body
 from models.schemas import OdooCommentResponse
 from utils.logger import logger
-import xmlrpc.client
 
 router = APIRouter()
 
@@ -17,7 +17,7 @@ async def post_odoo_comment(
 ):
     """
     Agent 5 Tool: Post comment to Odoo.
-    Refactored to accept explicit arguments.
+    FIX: Removed 'subtype_xml_id' to prevent Odoo API crash.
     """
     try:
         logger.info(f"Posting comment to Odoo sheet {expense_sheet_id}")
@@ -30,6 +30,7 @@ async def post_odoo_comment(
 
         models = xmlrpc.client.ServerProxy(f"{odoo_url}/xmlrpc/2/object")
 
+        # FIX: Removed 'subtype_xml_id'. Only use supported fields.
         message_id = models.execute_kw(
             odoo_db,
             uid,
@@ -40,12 +41,18 @@ async def post_odoo_comment(
             {
                 "body": comment_html,
                 "message_type": "comment",
-                "subtype_xml_id": "mail.mt_note",
+                "content_subtype": "html",  # Ensures HTML rendering
             },
         )
 
+        logger.info(f"Successfully posted comment. Message ID: {message_id}")
         return OdooCommentResponse(success=True, message_id=message_id)
 
+    except xmlrpc.client.Fault as fault:
+        error_msg = f"Odoo API Fault: {fault.faultString}"
+        logger.error(f"Failed to post comment: {error_msg}")
+        return OdooCommentResponse(success=False, error=error_msg)
+
     except Exception as e:
-        logger.error(f"Failed to post comment: {e}")
+        logger.error(f"Failed to post comment: {str(e)}")
         return OdooCommentResponse(success=False, error=str(e))
