@@ -32,6 +32,7 @@ class InvoiceVerificationResult(BaseModel):
     category_confidence: float = 0.0
     policy_compliant: bool = True
     policy_violations: List[Dict[str, Any]] = []
+    currency: str = "CHF"  # <--- ADDED FIELD
 
 
 class VerificationOnlyResponse(BaseModel):
@@ -62,7 +63,7 @@ async def verify_expenses_only(
 ):
     """
     Agent 1 Tool: Verifies expenses (OCR + Math).
-    Uses 'total_amount' as the claimed amount since 'unit_amount' is unavailable.
+    Includes defensive coding to prevent crashes on missing Odoo fields.
     """
     start_time = time.time()
     set_correlation_id(f"verify_only_{expense_sheet_id}")
@@ -122,7 +123,6 @@ async def verify_expenses_only(
                 ocr_result = await odoo_ocr(ocr_req)
 
                 # Safe Amount Extraction: Use total_amount as fallback
-                # This matches the Odoo fetch change
                 claimed_amount = line.get("total_amount", 0.0)
 
                 curr_raw = line.get("currency_id")
@@ -165,6 +165,7 @@ async def verify_expenses_only(
                         category_confidence=0.0,
                         policy_compliant=True,
                         policy_violations=[],
+                        currency=currency_code,  # <--- ASSIGN CURRENCY
                     )
                 )
 
@@ -179,6 +180,7 @@ async def verify_expenses_only(
                         amount_matched=False,
                         risk_level="HIGH",
                         discrepancy_message=f"System Error: {str(e)}",
+                        currency="CHF",  # Default currency on error
                     )
                 )
 
@@ -186,7 +188,6 @@ async def verify_expenses_only(
 
         # 3. Calculate Total
         try:
-            # Use total_amount here too
             safe_total = sum(l.get("total_amount", 0.0) for l in expense_lines)
 
             total_req = TotalCalculationRequest(
